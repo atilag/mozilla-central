@@ -14,6 +14,19 @@
 #include "mozilla/Services.h"
 
 #include <math.h>
+#include <signal.h>
+
+#include "android/log.h"
+#define ALOG(args...)  __android_log_print(ANDROID_LOG_INFO, "TimerThread", args)
+
+#define DUMP_VFP_REGISTER(sReg, dDump ) \
+        __asm__ __volatile__ ( \
+        "vmov.f64 %P0,"sReg"\n" \ 
+            : "=w" (dDump) \
+            : \
+            : sReg \
+        );
+
 
 using namespace mozilla;
 
@@ -242,6 +255,7 @@ NS_IMETHODIMP TimerThread::Run()
   // We use this to decide how to round our wait times later
   int32_t halfMicrosecondsIntervalResolution = high >> 1;
 
+  double dTmp;
   while (!mShutdown) {
     // Have to use PRIntervalTime here, since PR_WaitCondVar takes it
     PRIntervalTime waitFor;
@@ -324,12 +338,31 @@ NS_IMETHODIMP TimerThread::Run()
         // resolution. We use halfMicrosecondsIntervalResolution, calculated
         // before, to do the optimal rounding (i.e., of how to decide what
         // interval is so small we should not wait at all).
+        volatile int iOneThousand = 1000;
+        double microseconds = (timeout - now).ToMilliseconds()*iOneThousand;
+    	/*DUMP_VFP_REGISTER("d9", dTmp);
+	if( isnan(dTmp) ){
+		//kill(0, SIGINT);
+		ALOG("1 ==============> d9 = %f", dTmp); 
+	}
+	
+		
         double microseconds = (timeout - now).ToMilliseconds()*1000;
+
+    	DUMP_VFP_REGISTER("d9", dTmp);
+	if( isnan(dTmp) ) {
+		//kill(0, SIGINT);
+		ALOG("2 =============> d9 = %f", dTmp); 
+	}*/
+	
         if (microseconds < halfMicrosecondsIntervalResolution)
           goto next; // round down; execute event now
         waitFor = PR_MicrosecondsToInterval(microseconds);
         if (waitFor == 0)
           waitFor = 1; // round up, wait the minimum time we can wait
+          if (waitFor > 4000000 || microseconds < 0.0) {
+            ALOG("****warning: BIG TIMER: waitFor=%d, microseconds=%f", waitFor, microseconds);
+          }
       }
 
 #ifdef DEBUG_TIMERS
