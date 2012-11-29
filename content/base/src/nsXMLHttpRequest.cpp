@@ -465,6 +465,8 @@ nsXMLHttpRequest::Init(nsIPrincipal* aPrincipal,
                        nsPIDOMWindow* aOwnerWindow,
                        nsIURI* aBaseURI)
 {
+  NS_ASSERTION(!aOwnerWindow || aOwnerWindow->IsOuterWindow(),
+               "Expecting an outer window here!");
   NS_ENSURE_ARG_POINTER(aPrincipal);
   Construct(aPrincipal,
             aOwnerWindow ? aOwnerWindow->GetCurrentInnerWindow() : nullptr,
@@ -1677,8 +1679,17 @@ nsXMLHttpRequest::IsSystemXHR()
 nsresult
 nsXMLHttpRequest::CheckChannelForCrossSiteRequest(nsIChannel* aChannel)
 {
-  // First check if cross-site requests are enabled...
+  // A system XHR (chrome code or a web app with the right permission) can
+  // always perform cross-site requests. In the web app case, however, we
+  // must still check for protected URIs like file:///.
   if (IsSystemXHR()) {
+    if (!nsContentUtils::IsSystemPrincipal(mPrincipal)) {
+      nsIScriptSecurityManager *secMan = nsContentUtils::GetSecurityManager();
+      nsCOMPtr<nsIURI> uri;
+      aChannel->GetOriginalURI(getter_AddRefs(uri));
+      return secMan->CheckLoadURIWithPrincipal(
+        mPrincipal, uri, nsIScriptSecurityManager::STANDARD);
+    }
     return NS_OK;
   }
 

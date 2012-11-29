@@ -361,13 +361,6 @@ pref("content.ime.strict_policy", true);
 // $ adb shell start
 pref("browser.dom.window.dump.enabled", false);
 
-
-
-// Temporarily relax file:// origin checks so that we can use <img>s
-// from other dirs as webgl textures and more.  Remove me when we have
-// installable apps or wifi support.
-pref("security.fileuri.strict_origin_policy", false);
-
 // Default Content Security Policy to apply to privileged and certified apps
 pref("security.apps.privileged.CSP.default", "default-src *; script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'");
 pref("security.apps.certified.CSP.default", "default-src *; script-src 'self'; object-src 'none'; style-src 'self'");
@@ -466,9 +459,6 @@ pref("shutdown.watchdog.timeoutSecs", 5);
 pref("b2g.update.apply-prompt-timeout", 60000); // milliseconds
 // Amount of time to wait after the user is idle before prompting to apply an update
 pref("b2g.update.apply-idle-timeout", 600000); // milliseconds
-// Amount of time the updater waits for the process to exit cleanly before
-// forcefully exiting the process
-pref("b2g.update.self-destruct-timeout", 5000); // milliseconds
 
 pref("app.update.enabled", true);
 pref("app.update.auto", false);
@@ -510,7 +500,7 @@ pref("extensions.getAddons.cache.enabled", false);
 
 // Context Menu
 pref("ui.click_hold_context_menus", true);
-pref("ui.click_hold_context_menus.delay", 1000);
+pref("ui.click_hold_context_menus.delay", 750);
 
 // Enable device storage
 pref("device.storage.enabled", true);
@@ -559,6 +549,8 @@ pref("hal.processPriorityManager.gonk.masterOomScoreAdjust", 0);
 pref("hal.processPriorityManager.gonk.masterKillUnderMB", 1);
 pref("hal.processPriorityManager.gonk.foregroundOomScoreAdjust", 67);
 pref("hal.processPriorityManager.gonk.foregroundKillUnderMB", 4);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableOomScoreAdjust", 134);
+pref("hal.processPriorityManager.gonk.backgroundPerceivebleKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenOomScoreAdjust", 200);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundOomScoreAdjust", 400);
@@ -606,6 +598,13 @@ pref("browser.prompt.allowNative", false);
 // a restart is required to enable a new value.
 pref("network.activity.blipIntervalMilliseconds", 250);
 
+// By default we want the NetworkManager service to manage Gecko's offline
+// status for us according to the state of Wifi/cellular data connections.
+// In some environments, such as the emulator or hardware with other network
+// connectivity, this is not desireable, however, in which case this pref
+// can be flipped to false.
+pref("network.gonk.manage-offline-status", true);
+
 pref("jsloader.reuseGlobal", true);
 
 // Enable font inflation for browser tab content.
@@ -619,3 +618,7 @@ pref("memory.free_dirty_pages", true);
 
 // Wait up to this much milliseconds when orientation changed
 pref("layers.orientation.sync.timeout", 1000);
+
+// Don't discard WebGL contexts for foreground apps on memory
+// pressure.
+pref("webgl.can-lose-context-in-foreground", false);
