@@ -2449,19 +2449,6 @@ nsHttpChannel::OnOfflineCacheEntryAvailable(nsICacheEntryDescriptor *aEntry,
     return OpenNormalCacheEntry(usingSSL);
 }
 
-static void
-GetAppInfo(nsIChannel* aChannel, uint32_t* aAppId, bool* aIsInBrowser)
-{
-    nsCOMPtr<nsILoadContext> loadContext;
-    NS_QueryNotificationCallbacks(aChannel, loadContext);
-    *aAppId = NECKO_NO_APP_ID;
-    *aIsInBrowser = false;
-    if (loadContext) {
-        loadContext->GetAppId(aAppId);
-        loadContext->GetIsInBrowserElement(aIsInBrowser);
-    }
-}
-
 nsresult
 nsHttpChannel::OpenNormalCacheEntry(bool usingSSL)
 {
@@ -2469,9 +2456,9 @@ nsHttpChannel::OpenNormalCacheEntry(bool usingSSL)
 
     nsresult rv;
 
-    uint32_t appId;
-    bool isInBrowser;
-    GetAppInfo(this, &appId, &isInBrowser);
+    uint32_t appId = NECKO_NO_APP_ID;
+    bool isInBrowser = false;
+    NS_GetAppInfo(this, &appId, &isInBrowser);
 
     nsCacheStoragePolicy storagePolicy = DetermineStoragePolicy();
     nsAutoCString clientID;
@@ -3604,7 +3591,15 @@ nsHttpChannel::InitOfflineCacheEntry()
     }
 
     if (!mResponseHead || mResponseHead->NoStore()) {
+        if (mResponseHead && mResponseHead->NoStore()) {
+            mOfflineCacheEntry->AsyncDoom(nullptr);
+        }
+
         CloseOfflineCacheEntry();
+
+        if (mResponseHead && mResponseHead->NoStore()) {
+            return NS_ERROR_NOT_AVAILABLE;
+        }
 
         return NS_OK;
     }
@@ -5859,9 +5854,9 @@ nsHttpChannel::DoInvalidateCacheEntry(const nsCString &key)
     // The logic below deviates from the original logic in OpenCacheEntry on
     // one point by using only READ_ONLY access-policy. I think this is safe.
 
-    uint32_t appId;
-    bool isInBrowser;
-    GetAppInfo(this, &appId, &isInBrowser);
+    uint32_t appId = NECKO_NO_APP_ID;
+    bool isInBrowser = false;
+    NS_GetAppInfo(this, &appId, &isInBrowser);
 
     // First, find session holding the cache-entry - use current storage-policy
     nsCacheStoragePolicy storagePolicy = DetermineStoragePolicy();

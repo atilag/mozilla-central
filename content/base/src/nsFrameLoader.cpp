@@ -77,7 +77,7 @@
 
 #include "Layers.h"
 
-#include "AppProcessPermissions.h"
+#include "AppProcessChecker.h"
 #include "ContentParent.h"
 #include "TabParent.h"
 #include "mozilla/GuardObjects.h"
@@ -2307,6 +2307,20 @@ nsFrameLoader::CheckPermission(const nsAString& aPermission)
 {
   return AssertAppProcessPermission(GetRemoteBrowser(),
                                     NS_ConvertUTF16toUTF8(aPermission).get());
+}
+
+bool
+nsFrameLoader::CheckManifestURL(const nsAString& aManifestURL)
+{
+  return AssertAppProcessManifestURL(GetRemoteBrowser(),
+                                     NS_ConvertUTF16toUTF8(aManifestURL).get());
+}
+
+bool
+nsFrameLoader::CheckAppHasPermission(const nsAString& aPermission)
+{
+  return AssertAppHasPermission(GetRemoteBrowser(),
+                                NS_ConvertUTF16toUTF8(aPermission).get());
 }
 
 NS_IMETHODIMP

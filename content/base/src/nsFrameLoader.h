@@ -189,7 +189,8 @@ public:
   virtual bool DoSendAsyncMessage(const nsAString& aMessage,
                                   const mozilla::dom::StructuredCloneData& aData);
   virtual bool CheckPermission(const nsAString& aPermission);
-
+  virtual bool CheckManifestURL(const nsAString& aManifestURL);
+  virtual bool CheckAppHasPermission(const nsAString& aPermission);
 
   /**
    * Called from the layout frame associated with this frame loader;
