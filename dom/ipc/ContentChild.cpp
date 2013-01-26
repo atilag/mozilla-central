@@ -26,6 +26,7 @@
 #include "mozilla/dom/StorageChild.h"
 #include "mozilla/Hal.h"
 #include "mozilla/hal_sandbox/PHalChild.h"
+#include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/TestShellChild.h"
 #include "mozilla/ipc/XPCShellEnvironment.h"
 #include "mozilla/jsipc/PContextWrapperChild.h"
@@ -192,7 +193,7 @@ private:
     friend class ContentChild;
 };
 
-NS_IMPL_ISUPPORTS1(ConsoleListener, nsIConsoleListener)
+NS_IMPL_THREADSAFE_ISUPPORTS1(ConsoleListener, nsIConsoleListener)
 
 NS_IMETHODIMP
 ConsoleListener::Observe(nsIConsoleMessage* aMessage)
@@ -492,6 +493,17 @@ ContentChild::AllocPImageBridge(mozilla::ipc::Transport* aTransport,
                                 base::ProcessId aOtherProcess)
 {
     return ImageBridgeChild::StartUpInChildProcess(aTransport, aOtherProcess);
+}
+
+bool
+ContentChild::RecvSetProcessPrivileges(const ChildPrivileges& aPrivs)
+{
+  ChildPrivileges privs = (aPrivs == PRIVILEGES_DEFAULT) ?
+                          GeckoChildProcessHost::DefaultChildPrivileges() :
+                          aPrivs;
+  // If this fails, we die.
+  SetCurrentProcessPrivileges(privs);
+  return true;
 }
 
 static CancelableTask* sFirstIdleTask;
@@ -1139,8 +1151,15 @@ ContentChild::RecvAppInfo(const nsCString& version, const nsCString& buildID)
 {
     mAppInfo.version.Assign(version);
     mAppInfo.buildID.Assign(buildID);
-
-    PreloadSlowThings();
+    // If we're part of the mozbrowser machinery, go ahead and start
+    // preloading things.  We can only do this for mozbrowser because
+    // PreloadSlowThings() may set the docshell of the first TabChild
+    // inactive, and we can only safely restore it to active from
+    // BrowserElementChild.js.
+    if ((mIsForApp || mIsForBrowser) &&
+        Preferences::GetBool("dom.ipc.processPrelaunch.enabled", false)) {
+        PreloadSlowThings();
+    }
     return true;
 }
 

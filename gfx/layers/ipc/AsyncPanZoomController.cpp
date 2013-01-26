@@ -125,6 +125,14 @@ AsyncPanZoomController::~AsyncPanZoomController() {
 
 }
 
+void
+AsyncPanZoomController::Destroy()
+{
+  // These memebrs can only be used on the controller/UI thread.
+  mGeckoContentController = nullptr;
+  mGestureEventListener = nullptr;
+}
+
 static gfx::Point
 WidgetSpaceToCompensatedViewportSpace(const gfx::Point& aPoint,
                                       gfxFloat aCurrentZoom)
@@ -1135,9 +1143,8 @@ bool AsyncPanZoomController::SampleContentTransformForFrame(const TimeStamp& aSa
                                             mAsyncScrollTimeout);
   }
 
-  nsIntPoint scrollCompensation(
-    ((scrollOffset / rootScale - metricsScrollOffset) * localScale)
-    .RoundedAwayFromZero());
+  gfxPoint scrollCompensation(
+    (scrollOffset / rootScale - metricsScrollOffset) * localScale);
   *aNewTransform = ViewTransform(-scrollCompensation, localScale);
 
   mLastSampleTime = aSampleTime;
