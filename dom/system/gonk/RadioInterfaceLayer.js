@@ -94,6 +94,7 @@ const RIL_IPC_MOBILECONNECTION_MSG_NAMES = [
   "RIL:CancelMMI",
   "RIL:SendStkResponse",
   "RIL:SendStkMenuSelection",
+  "RIL:SendStkTimerExpiration",
   "RIL:SendStkEventDownload",
   "RIL:RegisterMobileConnectionMsg",
   "RIL:SetCallForwardingOption",
@@ -468,6 +469,9 @@ RadioInterfaceLayer.prototype = {
         break;
       case "RIL:SendStkMenuSelection":
         this.sendStkMenuSelection(msg.json);
+        break;
+      case "RIL:SendStkTimerExpiration":
+        this.sendStkTimerExpiration(msg.json);
         break;
       case "RIL:SendStkEventDownload":
         this.sendStkEventDownload(msg.json);
@@ -1699,7 +1703,16 @@ RadioInterfaceLayer.prototype = {
 
   handleSetCallForward: function handleSetCallForward(message) {
     debug("handleSetCallForward: " + JSON.stringify(message));
-    this._sendRequestResults("RIL:SetCallForwardingOption", message);
+    this._sendTargetMessage("mobileconnection", "RIL:CfStateChanged", message);
+
+    let messageType;
+    if (message.isSendMMI) {
+      messageType = message.success ? "RIL:SendMMI:Return:OK" :
+                                      "RIL:SendMMI:Return:KO";
+    } else {
+      messageType = "RIL:SetCallForwardingOption";
+    }
+    this._sendRequestResults(messageType, message);
   },
 
   // nsIObserver
@@ -1989,6 +2002,11 @@ RadioInterfaceLayer.prototype = {
 
   sendStkMenuSelection: function sendStkMenuSelection(message) {
     message.rilMessageType = "sendStkMenuSelection";
+    this.worker.postMessage(message);
+  },
+
+  sendStkTimerExpiration: function sendStkTimerExpiration(message) {
+    message.rilMessageType = "sendStkTimerExpiration";
     this.worker.postMessage(message);
   },
 

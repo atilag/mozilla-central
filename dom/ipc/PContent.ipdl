@@ -76,10 +76,21 @@ struct FontListEntry {
     uint8_t   index;
 };
 
-struct DeviceStorageStatParams
+struct DeviceStorageFreeSpaceParams
 {
   nsString type;
   nsString fullpath;
+};
+
+struct DeviceStorageUsedSpaceParams
+{
+  nsString type;
+  nsString fullpath;
+};
+
+struct DeviceStorageAvailableParams
+{
+  nsString type;
 };
 
 struct DeviceStorageAddParams
@@ -116,7 +127,9 @@ union DeviceStorageParams
   DeviceStorageGetParams;
   DeviceStorageDeleteParams;
   DeviceStorageEnumerationParams;
-  DeviceStorageStatParams;
+  DeviceStorageFreeSpaceParams;
+  DeviceStorageUsedSpaceParams;
+  DeviceStorageAvailableParams;
 };
 
 // An IPCTabContext which corresponds to a PBrowser opened by a child when it
@@ -332,8 +345,7 @@ parent:
      * !isForBrowser|, we're probably loading <xul:browser remote>.
      */
     sync GetProcessAttributes()
-        returns (uint64_t id, bool startBackground,
-                 bool isForApp, bool isForBrowser);
+        returns (uint64_t id, bool isForApp, bool isForBrowser);
     sync GetXPCOMProcessAttributes()
         returns (bool isOffline);
 

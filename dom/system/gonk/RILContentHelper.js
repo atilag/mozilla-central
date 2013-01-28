@@ -77,7 +77,8 @@ const RIL_IPC_MSG_NAMES = [
   "RIL:DataError",
   "RIL:SetCallForwardingOption",
   "RIL:GetCallForwardingOption",
-  "RIL:CellBroadcastReceived"
+  "RIL:CellBroadcastReceived",
+  "RIL:CfStateChanged"
 ];
 
 const kVoiceChangedTopic     = "mobile-connection-voice-changed";
@@ -89,6 +90,7 @@ const kStkCommandTopic       = "icc-manager-stk-command";
 const kStkSessionEndTopic    = "icc-manager-stk-session-end";
 const kDataErrorTopic        = "mobile-connection-data-error";
 const kIccCardLockErrorTopic = "mobile-connection-icccardlock-error";
+const kCfStateChangedTopic   = "mobile-connection-cfstate-change";
 
 XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
                                    "@mozilla.org/childprocessmessagemanager;1",
@@ -579,6 +581,15 @@ RILContentHelper.prototype = {
                                                        helpRequested: helpRequested});
   },
 
+  sendStkTimerExpiration: function sendStkTimerExpiration(window,
+                                                          timer) {
+    if (window == null) {
+      throw Components.Exception("Can't get window object",
+                                  Cr.NS_ERROR_UNEXPECTED);
+    }
+    cpmm.sendAsyncMessage("RIL:SendStkTimerExpiration", {timer: timer});
+  },
+
   sendStkEventDownload: function sendStkEventDownload(window,
                                                       event) {
     if (window == null) {
@@ -695,6 +706,14 @@ RILContentHelper.prototype = {
 
   unregisterTelephonyCallback: function unregisteTelephonyCallback(callback) {
     this.unregisterCallback("_telephonyCallbacks", callback);
+
+    // We also need to make sure the callback is removed from
+    // _enumerationTelephonyCallbacks.
+    let index = this._enumerationTelephonyCallbacks.indexOf(callback);
+    if (index != -1) {
+      this._enumerationTelephonyCallbacks.splice(index, 1);
+      if (DEBUG) debug("Unregistered enumerationTelephony callback: " + callback);
+    }
   },
 
   registerVoicemailCallback: function registerVoicemailCallback(callback) {
@@ -971,6 +990,15 @@ RILContentHelper.prototype = {
         break;
       case "RIL:SetCallForwardingOption":
         this.handleSetCallForwardingOption(msg.json);
+        break;
+      case "RIL:CfStateChanged":
+        let result = JSON.stringify({success: msg.json.success,
+                                     action: msg.json.action,
+                                     reason: msg.json.reason,
+                                     number: msg.json.number,
+                                     timeSeconds: msg.json.timeSeconds,
+                                     serviceClass: msg.json.serviceClass});
+        Services.obs.notifyObservers(null, kCfStateChangedTopic, result);
         break;
       case "RIL:CellBroadcastReceived":
         let message = new CellBroadcastMessage(msg.json);
