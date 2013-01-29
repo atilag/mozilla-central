@@ -861,7 +861,24 @@ const gfx::Rect AsyncPanZoomController::CalculatePendingDisplayPort(
   gfxFloat resolution = CalculateResolution(aFrameMetrics).width;
   nsIntRect compositionBounds = aFrameMetrics.mCompositionBounds;
   compositionBounds.ScaleInverseRoundIn(resolution);
-  const gfx::Rect& scrollableRect = aFrameMetrics.mScrollableRect;
+  gfx::Rect scrollableRect = aFrameMetrics.mScrollableRect;
+
+  // Ensure the scrollableRect is at least as big as the compositionBounds
+  // because the scrollableRect can be smaller if the content is not large
+  // and the scrollableRect hasn't been updated yet.
+  // We move the scrollableRect up because we don't know if we can move it
+  // down. i.e. we know that scrollableRect can go back as far as zero.
+  // but we don't know how much further ahead it can go.
+  if (scrollableRect.width < compositionBounds.width) {
+      scrollableRect.x = std::max(0.f,
+                                  scrollableRect.x - (compositionBounds.width - scrollableRect.width));
+      scrollableRect.width = compositionBounds.width;
+  }
+  if (scrollableRect.height < compositionBounds.height) {
+      scrollableRect.y = std::max(0.f,
+                                  scrollableRect.y - (compositionBounds.height - scrollableRect.height));
+      scrollableRect.height = compositionBounds.height;
+  }
 
   gfx::Point scrollOffset = aFrameMetrics.mScrollOffset;
 
@@ -910,7 +927,7 @@ const gfx::Rect AsyncPanZoomController::CalculatePendingDisplayPort(
 
   gfx::Rect shiftedDisplayPort = displayPort;
   shiftedDisplayPort.MoveBy(scrollOffset.x, scrollOffset.y);
-  displayPort = shiftedDisplayPort.Intersect(aFrameMetrics.mScrollableRect);
+  displayPort = shiftedDisplayPort.Intersect(scrollableRect);
   displayPort.MoveBy(-scrollOffset.x, -scrollOffset.y);
 
   return displayPort;
@@ -1155,8 +1172,6 @@ bool AsyncPanZoomController::SampleContentTransformForFrame(const TimeStamp& aSa
 void AsyncPanZoomController::NotifyLayersUpdated(const FrameMetrics& aViewportFrame, bool aIsFirstPaint) {
   MonitorAutoLock monitor(mMonitor);
 
-  mPaintThrottler.TaskComplete();
-
   mLastContentPaintMetrics = aViewportFrame;
 
   mFrameMetrics.mMayHaveTouchListeners = aViewportFrame.mMayHaveTouchListeners;
@@ -1189,7 +1204,7 @@ void AsyncPanZoomController::NotifyLayersUpdated(const FrameMetrics& aViewportFr
     }
   }
 
-  mWaitingForContentToPaint = false;
+  mWaitingForContentToPaint = mPaintThrottler.TaskComplete();
   bool needContentRepaint = false;
   if (aViewportFrame.mCompositionBounds.width == mFrameMetrics.mCompositionBounds.width &&
       aViewportFrame.mCompositionBounds.height == mFrameMetrics.mCompositionBounds.height) {

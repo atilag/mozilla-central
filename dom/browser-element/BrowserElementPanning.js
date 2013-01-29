@@ -5,6 +5,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+"use strict";
+dump("############################### browserElementPanning.js loaded\n");
+
+let { classes: Cc, interfaces: Ci, results: Cr, utils: Cu }  = Components;
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/Geometry.jsm");
+
 const ContentPanning = {
   // Are we listening to touch or mouse events?
   watchedEventsType: '',
@@ -35,8 +43,8 @@ const ContentPanning = {
       this.watchedEventsType = 'mouse';
     }
     events.forEach(function(type) {
-      addEventListener(type, ContentPanning, false);
-    });
+      addEventListener(type, this, false);
+    }.bind(this));
 
     addMessageListener("Viewport:Change", this._recvViewportChange.bind(this));
     addMessageListener("Gesture:DoubleTap", this._recvDoubleTap.bind(this));
@@ -235,7 +243,6 @@ const ContentPanning = {
     let isPan = KineticPanning.isPan();
     if (!isPan) {
       // If panning distance is not large enough, both BES and APZC should not perform scrolling
-      evt.preventDefault();
       return;
     }
 
@@ -560,7 +567,7 @@ const ContentPanning = {
 ContentPanning.init();
 
 // Min/max velocity of kinetic panning. This is in pixels/millisecond.
-const kMinVelocity = 0.4;
+const kMinVelocity = 0.2;
 const kMaxVelocity = 6;
 
 // Constants that affect the "friction" of the scroll pane.
@@ -590,14 +597,16 @@ const KineticPanning = {
     this.target = target;
 
     // Calculate the initial velocity of the movement based on user input
-    let momentums = this.momentums.slice(-kSamples);
+    let momentums = this.momentums;
+    let flick = momentums[momentums.length - 1].time - momentums[0].time < 300;
+
+    // Calculate the panning based on the last moves.
+    momentums = momentums.slice(-kSamples);
 
     let distance = new Point(0, 0);
     momentums.forEach(function(momentum) {
       distance.add(momentum.dx, momentum.dy);
     });
-
-    let elapsed = momentums[momentums.length - 1].time - momentums[0].time;
 
     function clampFromZero(x, min, max) {
       if (x >= 0)
@@ -605,12 +614,22 @@ const KineticPanning = {
       return Math.min(-min, Math.max(-max, x));
     }
 
+    let elapsed = momentums[momentums.length - 1].time - momentums[0].time;
     let velocityX = clampFromZero(distance.x / elapsed, 0, kMaxVelocity);
     let velocityY = clampFromZero(distance.y / elapsed, 0, kMaxVelocity);
 
     let velocity = this._velocity;
-    velocity.set(Math.abs(velocityX) < kMinVelocity ? 0 : velocityX,
-                 Math.abs(velocityY) < kMinVelocity ? 0 : velocityY);
+    if (flick) {
+      // Very fast pan action that does not generate a click are very often pan
+      // action. If this is a small gesture then it will not move the view a lot
+      // and so it will be above the minimun threshold and not generate any
+      // kinetic panning. This does not look on a device since this is often
+      // a real gesture, so let's lower the velocity threshold for such moves.
+      velocity.set(velocityX, velocityY);
+    } else {
+      velocity.set(Math.abs(velocityX) < kMinVelocity ? 0 : velocityX,
+                   Math.abs(velocityY) < kMinVelocity ? 0 : velocityY);
+    }
     this.momentums = [];
 
     // Set acceleration vector to opposite signs of velocity
