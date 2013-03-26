@@ -13,6 +13,8 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Geometry.jsm");
 
+var global = this;
+
 const ContentPanning = {
   // Are we listening to touch or mouse events?
   watchedEventsType: '',
@@ -42,8 +44,16 @@ const ContentPanning = {
       events = ['mousedown', 'mouseup', 'mousemove'];
       this.watchedEventsType = 'mouse';
     }
+
+    let els = Cc["@mozilla.org/eventlistenerservice;1"]
+                .getService(Ci.nsIEventListenerService);
+
     events.forEach(function(type) {
-      addEventListener(type, this, false);
+      // Using the system group for mouse/touch events to avoid
+      // missing events if .stopPropagation() has been called.
+      els.addSystemEventListener(global, type,
+                                 this.handleEvent.bind(this),
+                                 /* useCapture = */ false);
     }.bind(this));
 
     addMessageListener("Viewport:Change", this._recvViewportChange.bind(this));
@@ -241,8 +251,10 @@ const ContentPanning = {
     }
 
     let isPan = KineticPanning.isPan();
-    if (!isPan) {
-      // If panning distance is not large enough, both BES and APZC should not perform scrolling
+    if (!isPan && this.detectingScrolling) {
+      // If panning distance is not large enough and we're waiting to
+      // see whether we should use the sync scroll fallback or not,
+      // don't attempt scrolling.
       return;
     }
 
@@ -261,7 +273,7 @@ const ContentPanning = {
       }
     }
 
-    // If a pan action happens, cancel the active state of the
+    // If we've detected a pan gesture, cancel the active state of the
     // current target.
     if (!this.panning && isPan) {
       this.panning = true;
@@ -270,6 +282,8 @@ const ContentPanning = {
     }
 
     if (this.panning) {
+      // Only do this when we're actually executing a pan gesture.
+      // Otherwise synthetic mouse events will be canceled.
       evt.stopPropagation();
       evt.preventDefault();
     }

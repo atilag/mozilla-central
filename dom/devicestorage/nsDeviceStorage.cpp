@@ -1196,8 +1196,8 @@ nsDOMDeviceStorageCursor::Continue()
   if (mRooted) {
     // We call onsuccess multiple times. clear the last
     // rooted result.
-    NS_DROP_JS_OBJECTS(this, nsDOMDeviceStorageCursor);
     mResult = JSVAL_VOID;
+    NS_DROP_JS_OBJECTS(this, nsDOMDeviceStorageCursor);
     mDone = false;
     mRooted = false;
   }
@@ -1861,6 +1861,9 @@ nsDOMDeviceStorage::nsDOMDeviceStorage()
 nsresult
 nsDOMDeviceStorage::Init(nsPIDOMWindow* aWindow, const nsAString &aType)
 {
+  DebugOnly<FileUpdateDispatcher*> observer = FileUpdateDispatcher::GetSingleton();
+  NS_ASSERTION(observer, "FileUpdateDispatcher is null");
+
   NS_ASSERTION(aWindow, "Must have a content dom");
 
   SetRootDirectoryForType(aType);

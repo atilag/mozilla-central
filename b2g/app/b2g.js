@@ -180,8 +180,6 @@ pref("content.sink.perf_parse_time", 50000000);
 
 // Maximum scripts runtime before showing an alert
 pref("dom.max_chrome_script_run_time", 0); // disable slow script dialog for chrome
-// Bug 817230 - disable the dialog until we implement its checkbox properly
-pref("dom.max_script_run_time", 0);
 
 // plugins
 pref("plugin.disable", true);
@@ -533,11 +531,11 @@ pref("javascript.options.mem.log", false);
 // Increase mark slice time from 10ms to 30ms
 pref("javascript.options.mem.gc_incremental_slice_ms", 30);
 
-pref("javascript.options.mem.gc_high_frequency_heap_growth_max", 120);
-pref("javascript.options.mem.gc_high_frequency_heap_growth_min", 101);
+pref("javascript.options.mem.gc_high_frequency_heap_growth_max", 150);
+pref("javascript.options.mem.gc_high_frequency_heap_growth_min", 120);
 pref("javascript.options.mem.gc_high_frequency_high_limit_mb", 40);
 pref("javascript.options.mem.gc_high_frequency_low_limit_mb", 10);
-pref("javascript.options.mem.gc_low_frequency_heap_growth", 105);
+pref("javascript.options.mem.gc_low_frequency_heap_growth", 120);
 pref("javascript.options.mem.high_water_mark", 6);
 pref("javascript.options.mem.gc_allocation_threshold_mb", 3);
 
@@ -552,24 +550,27 @@ pref("ui.showHideScrollbars", 1);
 // background.
 pref("dom.ipc.processPriorityManager.enabled", true);
 pref("dom.ipc.processPriorityManager.backgroundGracePeriodMS", 1000);
-pref("dom.ipc.processPriorityManager.temporaryPriorityMS", 5000);
+pref("dom.ipc.processPriorityManager.temporaryPriorityLockMS", 5000);
 
 // Kernel parameters for how processes are killed on low-memory.
 pref("gonk.systemMemoryPressureRecoveryPollMS", 5000);
 pref("hal.processPriorityManager.gonk.masterOomScoreAdjust", 0);
-pref("hal.processPriorityManager.gonk.masterKillUnderMB", 1);
-pref("hal.processPriorityManager.gonk.foregroundOomScoreAdjust", 67);
-pref("hal.processPriorityManager.gonk.foregroundKillUnderMB", 4);
-pref("hal.processPriorityManager.gonk.backgroundPerceivableOomScoreAdjust", 134);
-pref("hal.processPriorityManager.gonk.backgroundPerceivableKillUnderMB", 5);
-pref("hal.processPriorityManager.gonk.backgroundHomescreenOomScoreAdjust", 200);
-pref("hal.processPriorityManager.gonk.backgroundHomescreenKillUnderMB", 5);
+pref("hal.processPriorityManager.gonk.masterKillUnderMB", 4);
+pref("hal.processPriorityManager.gonk.foregroundHighOomScoreAdjust", 67);
+pref("hal.processPriorityManager.gonk.foregroundHighKillUnderMB", 5);
+pref("hal.processPriorityManager.gonk.foregroundOomScoreAdjust", 134);
+pref("hal.processPriorityManager.gonk.foregroundKillUnderMB", 6);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableOomScoreAdjust", 200);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableKillUnderMB", 7);
+pref("hal.processPriorityManager.gonk.backgroundHomescreenOomScoreAdjust", 267);
+pref("hal.processPriorityManager.gonk.backgroundHomescreenKillUnderMB", 8);
 pref("hal.processPriorityManager.gonk.backgroundOomScoreAdjust", 400);
-pref("hal.processPriorityManager.gonk.backgroundKillUnderMB", 8);
+pref("hal.processPriorityManager.gonk.backgroundKillUnderMB", 20);
 pref("hal.processPriorityManager.gonk.notifyLowMemUnderMB", 10);
 
 // Niceness values (i.e., CPU priorities) for B2G processes.
 pref("hal.processPriorityManager.gonk.masterNice", 0);
+pref("hal.processPriorityManager.gonk.foregroundHighNice", 0);
 pref("hal.processPriorityManager.gonk.foregroundNice", 1);
 pref("hal.processPriorityManager.gonk.backgroundPerceivableNice", 10);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenNice", 20);
@@ -582,6 +583,11 @@ pref("dom.ipc.processPrelaunch.enabled", true);
 // Wait this long before pre-launching a new subprocess.
 pref("dom.ipc.processPrelaunch.delayMs", 5000);
 #endif
+
+// When a process receives a system message, we hold a CPU wake lock on its
+// behalf for this many seconds, or until it handles the system message,
+// whichever comes first.
+pref("dom.ipc.systemMessageCPULockTimeoutSec", 30);
 
 // Ignore the "dialog=1" feature in window.open.
 pref("dom.disable_window_open_dialog_feature", true);
@@ -629,6 +635,10 @@ pref("font.size.inflation.disabledInMasterProcess", true);
 // consumption when applications are sent to the background.
 pref("memory.free_dirty_pages", true);
 
+// UAProfile settings
+pref("wap.UAProf.url", "");
+pref("wap.UAProf.tagname", "x-wap-profile");
+
 // Enable native identity (persona/browserid)
 pref("dom.identity.enabled", true);
 
@@ -649,3 +659,8 @@ pref("memory_info_dumper.watch_fifo.directory", "/data/local");
 pref("dom.disable_input_file", true);
 
 pref("general.useragent.enable_overrides", true);
+
+pref("b2g.version", @MOZ_B2G_VERSION@);
+
+// Disable console buffering to save memory.
+pref("consoleservice.buffered", false);

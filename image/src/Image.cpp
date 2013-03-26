@@ -83,6 +83,10 @@ Image::GetDecoderType(const char *aMimeType)
   else if (!strcmp(aMimeType, "image/icon"))
     rv = eDecoderType_icon;
 
+  // WBMP
+  else if (!strcmp(aMimeType, "image/vnd.wap.wbmp"))
+    rv = eDecoderType_wbmp;
+
   return rv;
 }
 

@@ -63,7 +63,7 @@ var SettingsListener = {
 SettingsListener.init();
 
 // =================== Audio ====================
-SettingsListener.observe('audio.volume.master', 0.5, function(value) {
+SettingsListener.observe('audio.volume.master', 1.0, function(value) {
   let audioManager = Services.audioManager;
   if (!audioManager)
     return;
@@ -140,19 +140,24 @@ SettingsListener.observe('language.current', 'en-US', function(value) {
 
 // =================== RIL ====================
 (function RILSettingsToPrefs() {
-  let strPrefs = ['ril.data.mmsc', 'ril.data.mmsproxy'];
+  let strPrefs = ['ril.mms.mmsc', 'ril.mms.mmsproxy'];
   strPrefs.forEach(function(key) {
     SettingsListener.observe(key, "", function(value) {
       Services.prefs.setCharPref(key, value);
     });
   });
 
-  ['ril.data.mmsport'].forEach(function(key) {
+  ['ril.mms.mmsport'].forEach(function(key) {
     SettingsListener.observe(key, null, function(value) {
       if (value != null) {
         Services.prefs.setIntPref(key, value);
       }
     });
+  });
+
+  SettingsListener.observe('ril.mms.retrieval_mode', 'manual',
+    function(value) {
+      Services.prefs.setCharPref('dom.mms.retrieval_mode', value);
   });
 
   SettingsListener.observe('ril.sms.strict7BitEncoding.enabled', false,

@@ -3877,6 +3877,18 @@ pref("jsloader.reuseGlobal", false);
 // event loop to become idle before actually taking the screenshot.
 pref("dom.browserElement.maxScreenshotDelayMS", 2000);
 
+// UAProfile settings
+pref("wap.UAProf.url", "");
+pref("wap.UAProf.tagname", "x-wap-profile");
+
+//Retrieval mode for MMS
+//manual: Manual retrieval mode.
+//automatic: Automatic retrieval mode.
+//never: Never retrieval mode.
+pref("dom.mms.retrieval_mode", "manual");
+pref("dom.mms.retrievalRetryCount", 3);
+pref("dom.mms.retrievalRetryInterval", 300000);
+
 // If the user puts a finger down on an element and we think the user
 // might be executing a pan gesture, how long do we wait before
 // tentatively deciding the gesture is actually a tap and activating
@@ -3886,3 +3898,9 @@ pref("ui.touch_activation.delay_ms", 100);
 // MemoryInfoDumper can watch a fifo in the temp directory and take various
 // actions when the fifo is written to.  Disable this in general.
 pref("memory_info_dumper.watch_fifo", false);
+
+#ifdef MOZ_CAPTIVEDETECT
+pref("captivedetect.maxWaitingTime", 5000);
+pref("captivedetect.pollingTime", 3000);
+pref("captivedetect.maxRetryCount", 5);
+#endif

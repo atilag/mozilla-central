@@ -50,6 +50,18 @@ class HTMLElement(object):
     def click(self):
         return self.marionette._send_message('clickElement', 'ok', element=self.id)
 
+    def single_tap(self, x=None, y=None):
+        return self.marionette._send_message('singleTap', 'ok', element=self.id, x=x, y=y)
+
+    def double_tap(self, x=None, y=None):
+        return self.marionette._send_message('doubleTap', 'ok', element=self.id, x=x, y=y)
+
+    def press(self, x=None, y=None):
+        return self.marionette._send_message('press', 'value', element=self.id, x=x, y=y)
+
+    def release(self, touch_id, x=None, y=None):
+        return self.marionette._send_message('release', 'ok', element=self.id, touchId=touch_id, x=x, y=y)
+
     @property
     def text(self):
         return self.marionette._send_message('getElementText', 'value', element=self.id)
@@ -92,6 +104,35 @@ class HTMLElement(object):
     def location(self):
         return self.marionette._send_message('getElementPosition', 'value', element=self.id)
 
+class Actions(object):
+    def __init__(self, marionette):
+        self.action_chain = []
+        self.marionette = marionette
+
+    def press(self, element, x=None, y=None):
+        element=element.id
+        self.action_chain.append(['press', element, x, y])
+        return self
+
+    def release(self):
+        self.action_chain.append(['release'])
+        return self
+
+    def move(self, element):
+        element=element.id
+        self.action_chain.append(['move', element])
+        return self
+
+    def move_by_offset(self, x, y):
+        self.action_chain.append(['moveByOffset', x, y])
+        return self
+
+    def wait(self, time=None):
+        self.action_chain.append(['wait', time])
+        return self
+
+    def perform(self):
+        return self.marionette._send_message('actionChain', 'ok', value=self.action_chain)
 
 class Marionette(object):
 

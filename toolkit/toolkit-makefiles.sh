@@ -62,6 +62,9 @@ MAKEFILES_dom="
   dom/mms/Makefile
   dom/mms/interfaces/Makefile
   dom/mms/src/Makefile
+  dom/mobilemessage/Makefile
+  dom/mobilemessage/interfaces/Makefile
+  dom/mobilemessage/src/Makefile
   dom/network/Makefile
   dom/network/interfaces/Makefile
   dom/network/src/Makefile
@@ -69,9 +72,6 @@ MAKEFILES_dom="
   dom/plugins/ipc/Makefile
   dom/power/Makefile
   dom/settings/Makefile
-  dom/sms/Makefile
-  dom/sms/interfaces/Makefile
-  dom/sms/src/Makefile
   dom/src/Makefile
   dom/src/events/Makefile
   dom/src/jsurl/Makefile
@@ -457,6 +457,7 @@ MAKEFILES_xulapp="
   toolkit/components/apppicker/Makefile
   toolkit/components/Makefile
   toolkit/components/build/Makefile
+  toolkit/components/captivedetect/Makefile
   toolkit/components/commandlines/Makefile
   toolkit/components/console/Makefile
   toolkit/components/contentprefs/Makefile
@@ -774,12 +775,12 @@ if [ "$ENABLE_TESTS" ]; then
     dom/imptests/webapps/XMLHttpRequest/tests/submissions/Ms2ger/Makefile
     dom/indexedDB/test/Makefile
     dom/indexedDB/test/unit/Makefile
+    dom/mobilemessage/tests/Makefile
     dom/network/tests/Makefile
     dom/plugins/test/Makefile
     dom/plugins/test/testplugin/Makefile
     dom/power/test/Makefile
     dom/settings/tests/Makefile
-    dom/sms/tests/Makefile
     dom/src/foo/Makefile
     dom/src/json/test/Makefile
     dom/src/jsurl/test/Makefile
@@ -917,6 +918,7 @@ if [ "$ENABLE_TESTS" ]; then
     testing/xpcshell/example/Makefile
     toolkit/components/aboutmemory/tests/Makefile
     toolkit/components/alerts/test/Makefile
+    toolkit/components/captivedetect/test/Makefile
     toolkit/components/commandlines/test/Makefile
     toolkit/components/contentprefs/tests/Makefile
     toolkit/components/downloads/test/Makefile

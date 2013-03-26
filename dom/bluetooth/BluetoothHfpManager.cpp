@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/basictypes.h" 
+#include "base/basictypes.h"
 
 #include "BluetoothHfpManager.h"
 
@@ -24,8 +24,6 @@
 #include "nsISettingsService.h"
 #include "nsIRadioInterfaceLayer.h"
 #include "nsRadioInterfaceLayer.h"
-
-#include <unistd.h> /* usleep() */
 
 #define AUDIO_VOLUME_BT_SCO "audio.volume.bt_sco"
 #define MOZSETTINGS_CHANGED_ID "mozsettings-changed"
@@ -300,6 +298,19 @@ CloseScoSocket()
     return;
   }
   sco->Disconnect();
+}
+
+bool
+IsValidDtmf(const char aChar) {
+  // Valid DTMF: [*#0-9ABCD]
+  if (aChar == '*' || aChar == '#') {
+    return true;
+  } else if (aChar >= '0' && aChar <= '9') {
+    return true;
+  } else if (aChar >= 'A' && aChar <= 'D') {
+    return true;
+  }
+  return false;
 }
 
 BluetoothHfpManager::BluetoothHfpManager()
@@ -616,6 +627,50 @@ BluetoothHfpManager::ReceiveSocketData(UnixSocketRawData* aMessage)
      * SLC establishment is done when AT+CMER has been received.
      * Do nothing but respond with "OK".
      */
+    ParseAtCommand(msg, 8, atCommandValues);
+
+    if (atCommandValues.Length() < 4) {
+      NS_WARNING("Could't get the value of command [AT+CMER=]");
+      goto respond_with_ok;
+    }
+
+    if (!atCommandValues[0].EqualsLiteral("3") ||
+        !atCommandValues[1].EqualsLiteral("0") ||
+        !atCommandValues[2].EqualsLiteral("0")) {
+      NS_WARNING("Wrong value of CMER");
+      goto respond_with_ok;
+    }
+
+    mCMER = (atCommandValues[3].EqualsLiteral("1"));
+  } else if (msg.Find("AT+VTS=") != -1) {
+    ParseAtCommand(msg, 7, atCommandValues);
+    if (atCommandValues.Length() != 1) {
+      NS_WARNING("Couldn't get the value of command [AT+VTS=]");
+      goto respond_with_ok;
+    }
+
+    if (IsValidDtmf(atCommandValues[0].get()[0])) {
+      nsAutoCString message("VTS=");
+      message += atCommandValues[0].get()[0];
+      NotifyDialer(NS_ConvertUTF8toUTF16(message));
+    }
+  } else if (msg.Find("AT+VGM=") != -1) {
+    ParseAtCommand(msg, 7, atCommandValues);
+
+    if (atCommandValues.IsEmpty()) {
+      NS_WARNING("Couldn't get the value of command [AT+VGM]");
+      goto respond_with_ok;
+    }
+
+    nsresult rv;
+    int vgm = atCommandValues[0].ToInteger(&rv);
+    if (NS_FAILED(rv)) {
+      NS_WARNING("Failed to extract microphone volume from bluetooth headset!");
+      goto respond_with_ok;
+    }
+
+    NS_ASSERTION(vgm >= 0 && vgm <= 15, "Received invalid VGM value");
+    mCurrentVgm = vgm;
   } else if (msg.Find("AT+CHLD=?") != -1) {
     SendLine("+CHLD: (1,2)");
   } else if (msg.Find("AT+CHLD=") != -1) {
@@ -687,15 +742,6 @@ BluetoothHfpManager::ReceiveSocketData(UnixSocketRawData* aMessage)
     // Currently, we don't support memory dialing in Dialer app
     SendLine("ERROR");
     return;
-  } else if ((msg.Find("AT+XAPL=") != -1) ||
-             (msg.Find("AT+XEVENT=") != -1)) {
-    // FIXME: Bug 838089
-    // These are vendor commands used on some special headsets. Eventually we
-    // should reply with ERROR to all unknown incoming commands. However,
-    // in order not to cause interoperability issues for b2g18 branch, only
-    // filtering these two commands should be fine for now.
-    SendLine("ERROR");
-    return;
   } else if (msg.Find("ATD") != -1) {
     nsAutoCString message(msg), newMsg;
     int end = message.FindChar(';');
@@ -747,10 +793,13 @@ BluetoothHfpManager::ReceiveSocketData(UnixSocketRawData* aMessage)
   } else {
 #ifdef DEBUG
     nsCString warningMsg;
-    warningMsg.AssignLiteral("Not handling HFP message, reply ok: ");
+    warningMsg.Append(NS_LITERAL_CSTRING("Unsupported AT command: "));
     warningMsg.Append(msg);
+    warningMsg.Append(NS_LITERAL_CSTRING(", reply with ERROR"));
     NS_WARNING(warningMsg.get());
 #endif
+    SendLine("ERROR");
+    return;
   }
 
 respond_with_ok:
@@ -870,6 +919,11 @@ BluetoothHfpManager::SendCommand(const char* aCommand, const int aValue)
   message += aCommand;
 
   if (!strcmp(aCommand, "+CIEV: ")) {
+    if (!mCMER) {
+      // Indicator status update is disabled
+      return true;
+    }
+
     if ((aValue < 1) || (aValue > ArrayLength(sCINDItems) - 1)) {
       NS_WARNING("unexpected CINDType for CIEV command");
       return false;
@@ -1054,7 +1108,7 @@ BluetoothHfpManager::SetupCIND(int aCallIndex, int aCallState,
       if (!aInitial) {
         SendCommand("+CIEV: ", CINDType::CALLHELD);
       }
-      
+
       break;
     default:
 #ifdef DEBUG
@@ -1164,4 +1218,5 @@ BluetoothHfpManager::OnDisconnect()
   sCINDItems[CINDType::CALLSETUP].value = CallSetupState::NO_CALLSETUP;
   sCINDItems[CINDType::CALLHELD].value = CallHeldState::NO_CALLHELD;
   mCLIP = false;
+  mCMER = false;
 }

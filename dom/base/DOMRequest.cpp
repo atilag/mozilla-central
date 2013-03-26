@@ -13,9 +13,11 @@
 #include "nsDOMEvent.h"
 #include "nsContentUtils.h"
 #include "nsThreadUtils.h"
+#include "DOMCursor.h"
 
 using mozilla::dom::DOMRequest;
 using mozilla::dom::DOMRequestService;
+using mozilla::dom::DOMCursor;
 
 DOMRequest::DOMRequest(nsIDOMWindow* aWindow)
   : mResult(JSVAL_VOID)
@@ -54,7 +56,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(DOMRequest,
                                                 nsDOMEventTargetHelper)
   if (tmp->mRooted) {
-    tmp->mResult = JSVAL_VOID;
     tmp->UnrootResultVal();
   }
   NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mError)
@@ -187,6 +188,7 @@ void
 DOMRequest::UnrootResultVal()
 {
   NS_ASSERTION(mRooted, "Don't call me if not rooted!");
+  mResult = JSVAL_VOID;
   NS_DROP_JS_OBJECTS(this, DOMRequest);
   mRooted = false;
 }
@@ -199,7 +201,16 @@ DOMRequestService::CreateRequest(nsIDOMWindow* aWindow,
 {
   NS_ENSURE_STATE(aWindow);
   NS_ADDREF(*aRequest = new DOMRequest(aWindow));
-  
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+DOMRequestService::CreateCursor(nsIDOMWindow* aWindow,
+                                nsICursorContinueCallback* aCallback,
+                                nsIDOMDOMCursor** aCursor) {
+  NS_ADDREF(*aCursor = new DOMCursor(aWindow, aCallback));
+
   return NS_OK;
 }
 
@@ -309,5 +320,13 @@ DOMRequestService::FireErrorAsync(nsIDOMDOMRequest* aRequest,
     NS_WARNING("Failed to dispatch to main thread!");
     return NS_ERROR_FAILURE;
   }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+DOMRequestService::FireDone(nsIDOMDOMCursor* aCursor) {
+  NS_ENSURE_STATE(aCursor);
+  static_cast<DOMCursor*>(aCursor)->FireDone();
+
   return NS_OK;
 }

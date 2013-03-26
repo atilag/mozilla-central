@@ -411,6 +411,7 @@ WebappsApplication.prototype = {
     this.initHelper(aWindow, ["Webapps:OfflineCache",
                               "Webapps:CheckForUpdate:Return:OK",
                               "Webapps:CheckForUpdate:Return:KO",
+                              "Webapps:Launch:Return:KO",
                               "Webapps:PackageEvent"]);
 
     cpmm.sendAsyncMessage("Webapps:RegisterForMessages",
@@ -579,6 +580,7 @@ WebappsApplication.prototype = {
             this._fireEvent("downloadsuccess", this._ondownloadsuccess);
             this._fireEvent("downloadapplied", this._ondownloadapplied);
           } else {
+            this.downloading = true;
             this._fireEvent("downloadprogress", this._onprogress);
           }
         } else if (msg.error) {

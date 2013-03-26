@@ -57,10 +57,10 @@ const kTimeNitzAutomaticUpdateEnabled    = "time.nitz.automatic-update.enabled";
 const kTimeNitzAvailable                 = "time.nitz.available";
 const kCellBroadcastSearchList           = "ril.cellbroadcast.searchlist";
 
-const DOM_SMS_DELIVERY_RECEIVED          = "received";
-const DOM_SMS_DELIVERY_SENDING           = "sending";
-const DOM_SMS_DELIVERY_SENT              = "sent";
-const DOM_SMS_DELIVERY_ERROR             = "error";
+const DOM_MOBILE_MESSAGE_DELIVERY_RECEIVED = "received";
+const DOM_MOBILE_MESSAGE_DELIVERY_SENDING  = "sending";
+const DOM_MOBILE_MESSAGE_DELIVERY_SENT     = "sent";
+const DOM_MOBILE_MESSAGE_DELIVERY_ERROR    = "error";
 
 const CALL_WAKELOCK_TIMEOUT              = 5000;
 
@@ -114,13 +114,13 @@ XPCOMUtils.defineLazyServiceGetter(this, "gPowerManagerService",
                                    "@mozilla.org/power/powermanagerservice;1",
                                    "nsIPowerManagerService");
 
-XPCOMUtils.defineLazyServiceGetter(this, "gSmsService",
-                                   "@mozilla.org/sms/smsservice;1",
-                                   "nsISmsService");
+XPCOMUtils.defineLazyServiceGetter(this, "gMobileMessageService",
+                                   "@mozilla.org/mobilemessage/mobilemessageservice;1",
+                                   "nsIMobileMessageService");
 
-XPCOMUtils.defineLazyServiceGetter(this, "gSmsDatabaseService",
-                                   "@mozilla.org/sms/rilsmsdatabaseservice;1",
-                                   "nsIRilSmsDatabaseService");
+XPCOMUtils.defineLazyServiceGetter(this, "gMobileMessageDatabaseService",
+                                   "@mozilla.org/mobilemessage/rilmobilemessagedatabaseservice;1",
+                                   "nsIRilMobileMessageDatabaseService");
 
 XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
                                    "@mozilla.org/parentprocessmessagemanager;1",
@@ -146,6 +146,12 @@ XPCOMUtils.defineLazyGetter(this, "WAP", function () {
   let WAP = {};
   Cu.import("resource://gre/modules/WapPushManager.js", WAP);
   return WAP;
+});
+
+XPCOMUtils.defineLazyGetter(this, "PhoneNumberUtils", function () {
+  let ns = {};
+  Cu.import("resource://gre/modules/PhoneNumberUtils.jsm", ns);
+  return ns.PhoneNumberUtils;
 });
 
 function convertRILCallState(state) {
@@ -210,7 +216,7 @@ function RadioInterfaceLayer() {
 
   this.rilContext = {
     radioState:     RIL.GECKO_RADIOSTATE_UNAVAILABLE,
-    cardState:      RIL.GECKO_CARDSTATE_UNAVAILABLE,
+    cardState:      RIL.GECKO_CARDSTATE_UNKNOWN,
     icc:            null,
 
     // These objects implement the nsIDOMMozMobileConnectionInfo interface,
@@ -575,7 +581,13 @@ RadioInterfaceLayer.prototype = {
         this.handleCallWaitingStatusChange(message);
         break;
       case "sms-received":
-        this.handleSmsReceived(message);
+        let ackOk = this.handleSmsReceived(message);
+        if (ackOk) {
+          this.worker.postMessage({
+            rilMessageType: "ackSMS",
+            result: RIL.PDU_FCS_OK
+          });
+        }
         return;
       case "sms-sent":
         this.handleSmsSent(message);
@@ -1394,13 +1406,18 @@ RadioInterfaceLayer.prototype = {
       if (handler) {
         handler(message);
       }
-      return;
+      return true;
     }
 
     if (message.encoding == RIL.PDU_DCS_MSG_CODING_8BITS_ALPHABET) {
       // Don't know how to handle binary data yet.
-      return;
+      return true;
     }
+
+    message.type = "sms";
+    message.sender = message.sender || null;
+    message.receiver = message.receiver || null;
+    message.body = message.fullBody = message.fullBody || null;
 
     // TODO: Bug #768441
     // For now we don't store indicators persistently. When the mwi.discard
@@ -1409,13 +1426,13 @@ RadioInterfaceLayer.prototype = {
 
     let mwi = message.mwi;
     if (mwi) {
-      mwi.returnNumber = message.sender || null;
-      mwi.returnMessage = message.fullBody || null;
+      mwi.returnNumber = message.sender;
+      mwi.returnMessage = message.fullBody;
       this._sendTargetMessage("voicemail", "RIL:VoicemailNotification", mwi);
-      return;
+      return true;
     }
 
-    let notifyReceived = function notifyReceived(rv, sms) {
+    let notifyReceived = function notifyReceived(rv, domMessage) {
       let success = Components.isSuccessCode(rv);
 
       // Acknowledge the reception of the SMS.
@@ -1433,39 +1450,45 @@ RadioInterfaceLayer.prototype = {
       }
 
       gSystemMessenger.broadcastMessage("sms-received", {
-          id: message.id,
-          delivery: DOM_SMS_DELIVERY_RECEIVED,
-          deliveryStatus: RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS,
-          sender: message.sender || null,
-          receiver: message.receiver || null,
-          body: message.fullBody || null,
-          messageClass: message.messageClass,
-          timestamp: message.timestamp,
-          read: false
+        id: message.id,
+        delivery: DOM_MOBILE_MESSAGE_DELIVERY_RECEIVED,
+        deliveryStatus: RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS,
+        sender: message.sender,
+        receiver: message.receiver,
+        body: message.fullBody,
+        messageClass: message.messageClass,
+        timestamp: message.timestamp,
+        read: false
       });
-      Services.obs.notifyObservers(sms, kSmsReceivedObserverTopic, null);
+
+      Services.obs.notifyObservers(domMessage, kSmsReceivedObserverTopic, null);
     }.bind(this);
 
     if (message.messageClass != RIL.GECKO_SMS_MESSAGE_CLASSES[RIL.PDU_DCS_MSG_CLASS_0]) {
-      message.id = gSmsDatabaseService.saveReceivedMessage(
-          message.sender || null,
-          message.fullBody || null,
-          message.messageClass,
-          message.timestamp,
-          notifyReceived);
+      message.id = gMobileMessageDatabaseService.saveReceivedMessage(message,
+                                                                     notifyReceived);
     } else {
       message.id = -1;
-      let sms = gSmsService.createSmsMessage(message.id,
-                                             DOM_SMS_DELIVERY_RECEIVED,
-                                             RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS,
-                                             message.sender || null,
-                                             message.receiver || null,
-                                             message.fullBody || null,
-                                             message.messageClass,
-                                             message.timestamp,
-                                             false);
-      notifyReceived(Cr.NS_OK, sms);
+      message.delivery = DOM_MOBILE_MESSAGE_DELIVERY_RECEIVED;
+      message.deliveryStatus = RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS;
+      message.read = false;
+
+      let domMessage =
+        gMobileMessageService.createSmsMessage(message.id,
+                                               message.delivery,
+                                               message.deliveryStatus,
+                                               message.sender,
+                                               message.receiver,
+                                               message.body,
+                                               message.messageClass,
+                                               message.timestamp,
+                                               message.read);
+
+      notifyReceived(Cr.NS_OK, domMessage);
     }
+
+    // SMS ACK will be sent in notifyReceived. Return false here.
+    return false;
   },
 
   /**
@@ -1491,14 +1514,15 @@ RadioInterfaceLayer.prototype = {
       return;
     }
 
-    gSmsDatabaseService.setMessageDelivery(options.sms.id,
-                                           DOM_SMS_DELIVERY_SENT,
-                                           options.sms.deliveryStatus,
-                                           function notifyResult(rv, sms) {
+    gMobileMessageDatabaseService.setMessageDelivery(options.sms.id,
+                                                     null,
+                                                     DOM_MOBILE_MESSAGE_DELIVERY_SENT,
+                                                     options.sms.deliveryStatus,
+                                                     function notifyResult(rv, domMessage) {
       //TODO bug 832140 handle !Components.isSuccessCode(rv)
       gSystemMessenger.broadcastMessage("sms-sent",
                                         {id: options.sms.id,
-                                         delivery: DOM_SMS_DELIVERY_SENT,
+                                         delivery: DOM_MOBILE_MESSAGE_DELIVERY_SENT,
                                          deliveryStatus: options.sms.deliveryStatus,
                                          sender: message.sender || null,
                                          receiver: options.sms.receiver,
@@ -1511,12 +1535,11 @@ RadioInterfaceLayer.prototype = {
         // No more used if STATUS-REPORT not requested.
         delete this._sentSmsEnvelopes[message.envelopeId];
       } else {
-        options.sms = sms;
+        options.sms = domMessage;
       }
 
-      options.request.notifyMessageSent(sms);
-
-      Services.obs.notifyObservers(sms, kSmsSentObserverTopic, null);
+      options.request.notifyMessageSent(domMessage);
+      Services.obs.notifyObservers(domMessage, kSmsSentObserverTopic, null);
     }.bind(this));
   },
 
@@ -1529,16 +1552,17 @@ RadioInterfaceLayer.prototype = {
     }
     delete this._sentSmsEnvelopes[message.envelopeId];
 
-    gSmsDatabaseService.setMessageDelivery(options.sms.id,
-                                           options.sms.delivery,
-                                           message.deliveryStatus,
-                                           function notifyResult(rv, sms) {
+    gMobileMessageDatabaseService.setMessageDelivery(options.sms.id,
+                                                     null,
+                                                     options.sms.delivery,
+                                                     message.deliveryStatus,
+                                                     function notifyResult(rv, domMessage) {
       //TODO bug 832140 handle !Components.isSuccessCode(rv)
       let topic = (message.deliveryStatus == RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS)
                   ? kSmsDeliverySuccessObserverTopic
                   : kSmsDeliveryErrorObserverTopic;
-      Services.obs.notifyObservers(sms, topic, null);
-    });
+      Services.obs.notifyObservers(domMessage, topic, null);
+    }.bind(this));
   },
 
   handleSmsSendFailed: function handleSmsSendFailed(message) {
@@ -1550,21 +1574,22 @@ RadioInterfaceLayer.prototype = {
     }
     delete this._sentSmsEnvelopes[message.envelopeId];
 
-    let error = Ci.nsISmsRequest.UNKNOWN_ERROR;
+    let error = Ci.nsIMobileMessageCallback.UNKNOWN_ERROR;
     switch (message.error) {
       case RIL.ERROR_RADIO_NOT_AVAILABLE:
-        error = Ci.nsISmsRequest.NO_SIGNAL_ERROR;
+        error = Ci.nsIMobileMessageCallback.NO_SIGNAL_ERROR;
         break;
     }
 
-    gSmsDatabaseService.setMessageDelivery(options.sms.id,
-                                           DOM_SMS_DELIVERY_ERROR,
-                                           RIL.GECKO_SMS_DELIVERY_STATUS_ERROR,
-                                           function notifyResult(rv, sms) {
+    gMobileMessageDatabaseService.setMessageDelivery(options.sms.id,
+                                                     null,
+                                                     DOM_MOBILE_MESSAGE_DELIVERY_ERROR,
+                                                     RIL.GECKO_SMS_DELIVERY_STATUS_ERROR,
+                                                     function notifyResult(rv, domMessage) {
       //TODO bug 832140 handle !Components.isSuccessCode(rv)
       options.request.notifySendMessageFailed(error);
-      Services.obs.notifyObservers(sms, kSmsFailedObserverTopic, null);
-    });
+      Services.obs.notifyObservers(domMessage, kSmsFailedObserverTopic, null);
+    }.bind(this));
   },
 
   /**
@@ -1917,18 +1942,40 @@ RadioInterfaceLayer.prototype = {
     this.worker.postMessage(message);
   },
 
+  _validateNumber: function _validateNumber(number) {
+    // note: isPlainPhoneNumber also accepts USSD and SS numbers
+    if (PhoneNumberUtils.isPlainPhoneNumber(number)) {
+      return true;
+    }
+
+    this.handleCallError({
+      callIndex: -1,
+      error: RIL.RIL_CALL_FAILCAUSE_TO_GECKO_CALL_ERROR[RIL.CALL_FAIL_UNOBTAINABLE_NUMBER]
+    });
+    debug("Number '" + number + "' doesn't seem to be a viable number. Drop.");
+
+    return false;
+  },
+
   dial: function dial(number) {
     debug("Dialing " + number);
-    this.worker.postMessage({rilMessageType: "dial",
-                             number: number,
-                             isDialEmergency: false});
+    number = PhoneNumberUtils.normalize(number);
+    if (this._validateNumber(number)) {
+      this.worker.postMessage({rilMessageType: "dial",
+                              number: number,
+                              isDialEmergency: false});
+    }
   },
 
   dialEmergency: function dialEmergency(number) {
     debug("Dialing emergency " + number);
-    this.worker.postMessage({rilMessageType: "dial",
-                             number: number,
-                             isDialEmergency: true});
+    // we don't try to be too clever here, as the phone is probably in the
+    // locked state. Let's just check if it's a number without normalizing
+    if (this._validateNumber(number)) {
+      this.worker.postMessage({rilMessageType: "dial",
+                              number: number,
+                              isDialEmergency: true});
+    }
   },
 
   hangUp: function hangUp(callIndex) {
@@ -2473,9 +2520,9 @@ RadioInterfaceLayer.prototype = {
       charsInLastSegment /= 2;
     }
 
-    let result = gSmsService.createSmsSegmentInfo(options.segmentMaxSeq,
-                                                  options.segmentChars,
-                                                  options.segmentChars - charsInLastSegment);
+    let result = gMobileMessageService.createSmsSegmentInfo(options.segmentMaxSeq,
+                                                            options.segmentChars,
+                                                            options.segmentChars - charsInLastSegment);
     return result;
   },
 
@@ -2496,19 +2543,23 @@ RadioInterfaceLayer.prototype = {
       options.segmentRef = this.nextSegmentRef;
     }
 
-    let timestamp = Date.now();
-    let deliveryStatus = options.requestStatusReport
-                       ? RIL.GECKO_SMS_DELIVERY_STATUS_PENDING
-                       : RIL.GECKO_SMS_DELIVERY_STATUS_NOT_APPLICABLE;
-    let id = gSmsDatabaseService.saveSendingMessage(number, message, deliveryStatus, timestamp,
-                                                    function notifyResult(rv, sms) {
+    let sendingMessage = {
+      type: "sms",
+      receiver: number,
+      body: message,
+      deliveryStatusRequested: options.requestStatusReport,
+      timestamp: Date.now()
+    };
+
+    let id = gMobileMessageDatabaseService.saveSendingMessage(sendingMessage,
+                                                              function notifyResult(rv, domMessage) {
       //TODO bug 832140 handle !Components.isSuccessCode(rv)
-      Services.obs.notifyObservers(sms, kSmsSendingObserverTopic, null);
+      Services.obs.notifyObservers(domMessage, kSmsSendingObserverTopic, null);
 
       // Keep current SMS message info for sent/delivered notifications
       options.envelopeId = this.createSmsEnvelope({
           request: request,
-          sms: sms,
+          sms: domMessage,
           requestStatusReport: options.requestStatusReport
       });
       this.worker.postMessage(options);

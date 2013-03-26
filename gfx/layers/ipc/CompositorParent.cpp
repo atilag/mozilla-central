@@ -674,18 +674,26 @@ SampleValue(float aPortion, Animation& aAnimation, nsStyleAnimation::Value& aSta
 
   TransformData& data = aAnimation.data().get_TransformData();
   nsPoint origin = data.origin();
-  int32_t auPerCSSPixel = nsDeviceContext::AppUnitsPerCSSPixel();
+  // we expect all our transform data to arrive in css pixels, so here we must
+  // adjust to dev pixels.
+  double cssPerDev = double(nsDeviceContext::AppUnitsPerCSSPixel())
+                     / double(data.appUnitsPerDevPixel());
+  gfxPoint3D mozOrigin = data.mozOrigin();
+  mozOrigin.x = mozOrigin.x * cssPerDev;
+  mozOrigin.y = mozOrigin.y * cssPerDev;
+  gfxPoint3D perspectiveOrigin = data.perspectiveOrigin();
+  perspectiveOrigin.x = perspectiveOrigin.x * cssPerDev;
+  perspectiveOrigin.y = perspectiveOrigin.y * cssPerDev;
   gfx3DMatrix transform =
     nsDisplayTransform::GetResultingTransformMatrix(
-      nullptr, origin, auPerCSSPixel,
-      &data.bounds(), interpolatedList, &data.mozOrigin(),
-      &data.perspectiveOrigin(), &data.perspective());
-  // NB: See nsDisplayTransform::GetTransform().
-  gfxPoint3D newOrigin =
-    gfxPoint3D(NS_round(NSAppUnitsToFloatPixels(origin.x, auPerCSSPixel)),
-               NS_round(NSAppUnitsToFloatPixels(origin.y, auPerCSSPixel)),
+      nullptr, origin, data.appUnitsPerDevPixel(),
+      &data.bounds(), interpolatedList, &mozOrigin,
+      &perspectiveOrigin, &data.perspective());
+  gfxPoint3D scaledOrigin =
+    gfxPoint3D(NS_round(NSAppUnitsToFloatPixels(origin.x, data.appUnitsPerDevPixel())),
+               NS_round(NSAppUnitsToFloatPixels(origin.y, data.appUnitsPerDevPixel())),
                0.0f);
-  transform.Translate(newOrigin);
+  transform.Translate(scaledOrigin);
 
   InfallibleTArray<TransformFunction> functions;
   functions.AppendElement(TransformMatrix(transform));
@@ -1213,8 +1221,10 @@ class CrossProcessCompositorParent : public PCompositorParent,
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CrossProcessCompositorParent)
 public:
-  CrossProcessCompositorParent() {}
-  virtual ~CrossProcessCompositorParent() {}
+  CrossProcessCompositorParent(Transport* aTransport)
+    : mTransport(aTransport)
+  {}
+  virtual ~CrossProcessCompositorParent();
 
   virtual void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
 
@@ -1251,6 +1261,7 @@ private:
   // reference to top-level actors.  So we hold a reference to
   // ourself.  This is released (deferred) in ActorDestroy().
   nsRefPtr<CrossProcessCompositorParent> mSelfRef;
+  Transport* mTransport;
 };
 
 static void
@@ -1266,7 +1277,7 @@ OpenCompositor(CrossProcessCompositorParent* aCompositor,
 CompositorParent::Create(Transport* aTransport, ProcessId aOtherProcess)
 {
   nsRefPtr<CrossProcessCompositorParent> cpcp =
-    new CrossProcessCompositorParent();
+    new CrossProcessCompositorParent(aTransport);
   ProcessHandle handle;
   if (!base::OpenProcessHandle(aOtherProcess, &handle)) {
     // XXX need to kill |aOtherProcess|, it's boned
@@ -1361,8 +1372,14 @@ CrossProcessCompositorParent::ShadowLayersUpdated(
 void
 CrossProcessCompositorParent::DeferredDestroy()
 {
-  mSelfRef = NULL;
+  mSelfRef = nullptr;
   // |this| was just destroyed, hands off
+}
+
+CrossProcessCompositorParent::~CrossProcessCompositorParent()
+{
+  XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
+                                   new DeleteTask<Transport>(mTransport));
 }
 
 } // namespace layers

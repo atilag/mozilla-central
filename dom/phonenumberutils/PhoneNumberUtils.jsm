@@ -46,8 +46,8 @@ this.PhoneNumberUtils = {
     }
 
     // Get previous mcc
-    if (!mcc && ril.voiceConnectionInfo && ril.voiceConnectionInfo.network) {
-      mcc = ril.voiceConnectionInfo.network.previousMcc;
+    if (!mcc && ril.voiceConnectionInfo) {
+      mcc = ril.voiceConnectionInfo.lastKnownMcc;
     }
 
     // Set to default mcc
@@ -83,5 +83,17 @@ this.PhoneNumberUtils = {
     let countryName = MCC_ISO3166_TABLE[aMCC];
     if (DEBUG) debug("found country name: " + countryName);
     return PhoneNumber.Parse(aNumber, countryName);
+  },
+
+  isPlainPhoneNumber: function isPlainPhoneNumber(aNumber) {
+    var isPlain = PhoneNumber.IsPlain(aNumber);
+    if (DEBUG) debug("isPlain(" + aNumber + ") " + isPlain);
+    return isPlain;
+  },
+
+  normalize: function Normalize(aNumber) {
+    var normalized = PhoneNumber.Normalize(aNumber);
+    if (DEBUG) debug("normalize(" + aNumber + "): " + normalized);
+    return normalized;
   }
 };

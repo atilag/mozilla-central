@@ -298,7 +298,8 @@ AddAnimationsForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
   nsStyleContext* styleContext = aFrame->GetStyleContext();
   nsPresContext* presContext = aFrame->PresContext();
   nsRect bounds = nsDisplayTransform::GetFrameBoundsForTransform(aFrame);
-  float scale = presContext->AppUnitsPerDevPixel();
+  // all data passed directly to the compositor should be in css pixels
+  float scale = nsDeviceContext::AppUnitsPerCSSPixel();
 
   TimeStamp startTime = ea->mStartTime;
   TimeDuration duration = ea->mIterationDuration;
@@ -377,6 +378,7 @@ AddAnimationsAndTransitionsToLayer(Layer* aLayer, nsDisplayListBuilder* aBuilder
   AnimationData data;
   if (aProperty == eCSSProperty_transform) {
     nsRect bounds = nsDisplayTransform::GetFrameBoundsForTransform(frame);
+    // all data passed directly to the compositor should be in css pixels
     float scale = nsDeviceContext::AppUnitsPerCSSPixel();
     gfxPoint3D offsetToTransformOrigin =
       nsDisplayTransform::GetDeltaToMozTransformOrigin(frame, scale, &bounds);
@@ -393,7 +395,8 @@ AddAnimationsAndTransitionsToLayer(Layer* aLayer, nsDisplayListBuilder* aBuilder
     nsPoint origin = aItem->ToReferenceFrame();
 
     data = TransformData(origin, offsetToTransformOrigin,
-                         offsetToPerspectiveOrigin, bounds, perspective);
+                         offsetToPerspectiveOrigin, bounds, perspective,
+                         frame->PresContext()->AppUnitsPerDevPixel());
   } else if (aProperty == eCSSProperty_opacity) {
     data = null_t();
   }
@@ -562,12 +565,24 @@ void nsDisplayListBuilder::MarkOutOfFlowFrameForDisplay(nsIFrame* aDirtyFrame,
   nsRect dirty = aDirtyRect - aFrame->GetOffsetTo(aDirtyFrame);
   nsRect overflowRect = aFrame->GetVisualOverflowRect();
 
+  if (aFrame->IsTransformed() &&
+      nsLayoutUtils::HasAnimationsForCompositor(aFrame->GetContent(),
+                                                eCSSProperty_transform)) {
+   /**
+    * Add a fuzz factor to the overflow rectangle so that elements only just
+    * out of view are pulled into the display list, so they can be
+    * prerendered if necessary.
+    */
+    overflowRect.Inflate(nsPresContext::CSSPixelsToAppUnits(32));
+  }
+
   if (mHasDisplayPort && IsFixedFrame(aFrame)) {
     dirty = overflowRect;
   }
 
   if (!dirty.IntersectRect(dirty, overflowRect))
     return;
+
   aFrame->Properties().Set(nsDisplayListBuilder::OutOfFlowDirtyRectProperty(),
                            new nsRect(dirty));
 
@@ -3726,7 +3741,14 @@ nsDisplayTransform::ShouldPrerenderTransformedContent(nsDisplayListBuilder* aBui
                                                       nsIFrame* aFrame,
                                                       bool aLogAnimations)
 {
-  if (!aFrame->AreLayersMarkedActive(nsChangeHint_UpdateTransformLayer)) {
+  // Elements whose transform has been modified recently, or which
+  // have a compositor-animated transform, can be prerendered. An element
+  // might have only just had its transform animated in which case
+  // nsChangeHint_UpdateTransformLayer will not be present yet.
+  if (!aFrame->AreLayersMarkedActive(nsChangeHint_UpdateTransformLayer) &&
+      (!aFrame->GetContent() ||
+       !nsLayoutUtils::HasAnimationsForCompositor(aFrame->GetContent(),
+                                                  eCSSProperty_transform))) {
     if (aLogAnimations) {
       nsCString message;
       message.AppendLiteral("Performance warning: Async animation disabled because frame was not marked active for transform animation");
@@ -3811,6 +3833,12 @@ nsDisplayTransform::GetTransform(float aAppUnitsPerPixel)
     }
   }
   return mTransform;
+}
+
+bool
+nsDisplayTransform::ShouldBuildLayerEvenIfInvisible(nsDisplayListBuilder* aBuilder)
+{
+  return ShouldPrerenderTransformedContent(aBuilder, mFrame, false);
 }
 
 already_AddRefed<Layer> nsDisplayTransform::BuildLayer(nsDisplayListBuilder *aBuilder,

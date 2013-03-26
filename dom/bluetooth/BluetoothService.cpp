@@ -264,7 +264,7 @@ RemoveObserversExceptBluetoothManager
    void* arg)
 {
   if (!key.EqualsLiteral("/")) {
-    static_cast<BluetoothService*>(arg)->RemoveObserverFromTable(key);
+    return PL_DHASH_REMOVE;
   }
 
   return PL_DHASH_NEXT;
@@ -368,13 +368,22 @@ BluetoothService::UnregisterBluetoothSignalHandler(const nsAString& aNodeName,
   }
 }
 
+PLDHashOperator
+RemoveAllSignalHandlers(const nsAString& aKey,
+                        nsAutoPtr<BluetoothSignalObserverList>& aData,
+                        void* aUserArg)
+{
+  aData->RemoveObserver(static_cast<BluetoothSignalObserver*>(aUserArg));
+  return aData->Length() ? PL_DHASH_NEXT : PL_DHASH_REMOVE;
+}
+
 void
 BluetoothService::UnregisterAllSignalHandlers(BluetoothSignalObserver* aHandler)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aHandler);
 
-  mBluetoothSignalObserverTable.Clear();
+  mBluetoothSignalObserverTable.Enumerate(RemoveAllSignalHandlers, aHandler);
 }
 
 void
@@ -471,7 +480,7 @@ BluetoothService::SetEnabled(bool aEnabled)
      * for more details.
      */
     mBluetoothSignalObserverTable.Enumerate(
-      RemoveObserversExceptBluetoothManager, this);
+      RemoveObserversExceptBluetoothManager, nullptr);
   }
 
   /**

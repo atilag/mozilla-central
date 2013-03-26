@@ -48,11 +48,16 @@ Telephony::Telephony()
 
 Telephony::~Telephony()
 {
-  if (mRIL && mRILTelephonyCallback) {
-    mRIL->UnregisterTelephonyCallback(mRILTelephonyCallback);
+  if (mRILTelephonyCallback) {
+    mRILTelephonyCallback->Disable();
+
+    if (mRIL) {
+      mRIL->UnregisterTelephonyCallback(mRILTelephonyCallback);
+    }
   }
 
   if (mRooted) {
+    mCallsArray = nullptr;
     NS_DROP_JS_OBJECTS(this, Telephony);
   }
 

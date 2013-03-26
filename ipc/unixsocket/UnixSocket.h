@@ -7,7 +7,16 @@
 #ifndef mozilla_ipc_UnixSocket_h
 #define mozilla_ipc_UnixSocket_h
 
+
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <netinet/in.h>
+#ifdef MOZ_B2G_BT
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sco.h>
+#include <bluetooth/rfcomm.h>
+#endif
 #include <stdlib.h>
 #include "nsString.h"
 #include "nsAutoPtr.h"
@@ -15,6 +24,18 @@
 
 namespace mozilla {
 namespace ipc {
+
+union sockaddr_any {
+  struct sockaddr_storage storage; // address-family only
+  struct sockaddr_un un;
+  struct sockaddr_in in;
+  struct sockaddr_in6 in6;
+#ifdef MOZ_B2G_BT
+  struct sockaddr_sco sco;
+  struct sockaddr_rc rc;
+#endif
+  // ... others
+};
 
 class UnixSocketRawData
 {
@@ -78,10 +99,12 @@ public:
    * @param aAddrSize Size of the struct 
    * @param aAddr Struct to fill
    * @param aAddress If aIsServer is false, Address to connect to. nullptr otherwise.
+   *
+   * @return True if address is filled correctly, false otherwise
    */
-  virtual void CreateAddr(bool aIsServer,
+  virtual bool CreateAddr(bool aIsServer,
                           socklen_t& aAddrSize,
-                          struct sockaddr *aAddr,
+                          sockaddr_any& aAddr,
                           const char* aAddress) = 0;
 
   /** 
@@ -100,7 +123,7 @@ public:
    * @param aAddr Address struct
    * @param aAddrStr String to store address to
    */
-  virtual void GetSocketAddr(const sockaddr& aAddr,
+  virtual void GetSocketAddr(const sockaddr_any& aAddr,
                              nsAString& aAddrStr) = 0;
 
 };
@@ -131,6 +154,14 @@ public:
    * @param aMessage Data received from the socket.
    */
   virtual void ReceiveSocketData(UnixSocketRawData* aMessage) = 0;
+
+  /**
+   * Queue data to be sent to the socket. Can only be called on the IO thread.
+   *
+   * @param aImpl Implementation to send the data on.
+   * @param aData Data to be sent to the socket.
+   */
+  static void RawSendSocketData(UnixSocketImpl* aImpl, UnixSocketRawData* aData);
 
   /**
    * Queue data to be sent to the socket on the IO thread. Can only be called on
@@ -181,11 +212,6 @@ public:
   void CloseSocket();
 
   /** 
-   * Cancels connect/accept task loop, if one is currently running.
-   */
-  void CancelSocketTask();
-
-  /** 
    * Callback for socket connect/accept success. Called after connect/accept has
    * finished. Will be run on main thread, before any reads take place.
    */
@@ -221,8 +247,12 @@ public:
    */
   void GetSocketAddr(nsAString& aAddrStr);
 
-private:
+protected:
+  // This wants to be private (the class is opaque to consumers) but needs to
+  // be protected because of the BluetoothOppManager.
   UnixSocketImpl* mImpl;
+
+private:
   SocketConnectionStatus mConnectionStatus;
 };
 

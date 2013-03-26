@@ -2471,7 +2471,7 @@ DeferredRelease(nsISupports *obj)
     return nsXPConnect::GetRuntimeInstance()->DeferredRelease(obj);
 }
 
-bool
+NS_EXPORT_(bool)
 Base64Encode(JSContext *cx, JS::Value val, JS::Value *out)
 {
     MOZ_ASSERT(cx);
@@ -2497,7 +2497,7 @@ Base64Encode(JSContext *cx, JS::Value val, JS::Value *out)
     return true;
 }
 
-bool
+NS_EXPORT_(bool)
 Base64Decode(JSContext *cx, JS::Value val, JS::Value *out)
 {
     MOZ_ASSERT(cx);
@@ -2864,6 +2864,22 @@ nsXPConnect::ReadFunction(nsIObjectInputStream *stream, JSContext *cx, JSObject 
 {
     return ReadScriptOrFunction(stream, cx, nullptr, functionObjp);
 }
+
+#ifdef DEBUG
+void
+nsXPConnect::SetObjectToUnlink(void* aObject)
+{
+    if (mRuntime)
+        mRuntime->SetObjectToUnlink(aObject);
+}
+
+void
+nsXPConnect::AssertNoObjectsToTrace(void* aPossibleJSHolder)
+{
+    if (mRuntime)
+        mRuntime->AssertNoObjectsToTrace(aPossibleJSHolder);
+}
+#endif
 
 /* These are here to be callable from a debugger */
 JS_BEGIN_EXTERN_C

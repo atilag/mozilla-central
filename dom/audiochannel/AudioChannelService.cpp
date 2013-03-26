@@ -25,6 +25,7 @@
 #endif
 using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::hal;
 
 StaticRefPtr<AudioChannelService> gAudioChannelService;
 
@@ -93,7 +94,7 @@ AudioChannelService::RegisterAudioChannelAgent(AudioChannelAgent* aAgent,
                                                           true /* mElementHidden */,
                                                           true /* mMuted */);
   mAgents.Put(aAgent, data);
-  RegisterType(aType, CONTENT_PARENT_NO_CHILD_ID);
+  RegisterType(aType, CONTENT_PROCESS_ID_MAIN);
 }
 
 void
@@ -117,7 +118,7 @@ AudioChannelService::UnregisterAudioChannelAgent(AudioChannelAgent* aAgent)
   mAgents.RemoveAndForget(aAgent, data);
 
   if (data) {
-    UnregisterType(data->mType, data->mElementHidden, CONTENT_PARENT_NO_CHILD_ID);
+    UnregisterType(data->mType, data->mElementHidden, CONTENT_PROCESS_ID_MAIN);
   }
 }
 
@@ -134,6 +135,14 @@ AudioChannelService::UnregisterType(AudioChannelType aType,
   // In order to avoid race conditions, it's safer to notify any existing
   // agent any time a new one is registered.
   if (XRE_GetProcessType() == GeckoProcessType_Default) {
+    // We only remove ChildID when it is in the foreground.
+    // If in the background, we kept ChildID for allowing it to play next song.
+    if (aType == AUDIO_CHANNEL_CONTENT &&
+        mActiveContentChildIDs.Contains(aChildID) &&
+        (!aElementHidden &&
+         !mChannelCounters[AUDIO_CHANNEL_INT_CONTENT].Contains(aChildID))) {
+      mActiveContentChildIDs.RemoveElement(aChildID);
+    }
     SendAudioChannelChangedNotification();
     Notify();
   }
@@ -151,7 +160,7 @@ AudioChannelService::GetMuted(AudioChannelAgent* aAgent, bool aElementHidden)
   // Update visibility.
   data->mElementHidden = aElementHidden;
 
-  bool muted = GetMutedInternal(data->mType, CONTENT_PARENT_NO_CHILD_ID,
+  bool muted = GetMutedInternal(data->mType, CONTENT_PROCESS_ID_MAIN,
                                 aElementHidden, oldElementHidden);
   data->mMuted = muted;
 
@@ -174,23 +183,31 @@ AudioChannelService::GetMutedInternal(AudioChannelType aType, uint64_t aChildID,
 
   // If the audio content channel is visible, let's remember this ChildID.
   if (newType == AUDIO_CHANNEL_INT_CONTENT &&
-      oldType == AUDIO_CHANNEL_INT_CONTENT_HIDDEN &&
-      !mActiveContentChildIDs.Contains(aChildID)) {
+      oldType == AUDIO_CHANNEL_INT_CONTENT_HIDDEN) {
 
     if (mActiveContentChildIDsFrozen) {
       mActiveContentChildIDsFrozen = false;
       mActiveContentChildIDs.Clear();
     }
 
-    mActiveContentChildIDs.AppendElement(aChildID);
+    if (!mActiveContentChildIDs.Contains(aChildID)) {
+      mActiveContentChildIDs.AppendElement(aChildID);
+    }
   }
 
-  // If nothing is visible, the list has to been frozen.
   else if (newType == AUDIO_CHANNEL_INT_CONTENT_HIDDEN &&
            oldType == AUDIO_CHANNEL_INT_CONTENT &&
-           !mActiveContentChildIDsFrozen &&
-           mChannelCounters[AUDIO_CHANNEL_INT_CONTENT].IsEmpty()) {
-    mActiveContentChildIDsFrozen = true;
+           !mActiveContentChildIDsFrozen) {
+    // If nothing is visible, the list has to been frozen.
+    // Or if there is still any one with other ChildID in foreground then
+    // it should be removed from list and left other ChildIDs in the foreground
+    // to keep playing. Finally only last one childID which go to background
+    // will be in list.
+    if (mChannelCounters[AUDIO_CHANNEL_INT_CONTENT].IsEmpty()) {
+      mActiveContentChildIDsFrozen = true;
+    } else if (!mChannelCounters[AUDIO_CHANNEL_INT_CONTENT].Contains(aChildID)) {
+      mActiveContentChildIDs.RemoveElement(aChildID);
+    }
   }
 
   if (newType != oldType && aType == AUDIO_CHANNEL_CONTENT) {
@@ -290,8 +307,12 @@ AudioChannelService::SendAudioChannelChangedNotification()
       higher = AUDIO_CHANNEL_NOTIFICATION;
     }
 
-    // Content channels play in background if just one is active.
-    else if (!mActiveContentChildIDs.IsEmpty()) {
+    // There is only one Child can play content channel in the background.
+    // And need to check whether there is any content channels under playing
+    // now.
+    else if (!mActiveContentChildIDs.IsEmpty() &&
+             mChannelCounters[AUDIO_CHANNEL_INT_CONTENT_HIDDEN].Contains(
+             mActiveContentChildIDs[0])) {
       higher = AUDIO_CHANNEL_CONTENT;
     }
   }

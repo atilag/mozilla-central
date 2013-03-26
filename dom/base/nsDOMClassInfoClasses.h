@@ -399,7 +399,9 @@ DOMCI_CLASS(MozPowerManager)
 DOMCI_CLASS(MozWakeLock)
 
 DOMCI_CLASS(MozSmsManager)
+DOMCI_CLASS(MozMobileMessageManager)
 DOMCI_CLASS(MozSmsMessage)
+DOMCI_CLASS(MozMmsMessage)
 DOMCI_CLASS(MozSmsEvent)
 DOMCI_CLASS(MozSmsRequest)
 DOMCI_CLASS(MozSmsFilter)
@@ -524,6 +526,7 @@ DOMCI_CLASS(CameraCapabilities)
 
 DOMCI_CLASS(DOMError)
 DOMCI_CLASS(DOMRequest)
+DOMCI_CLASS(DOMCursor)
 DOMCI_CLASS(OpenWindowEventDetail)
 DOMCI_CLASS(AsyncScrollEventDetail)
 

@@ -29,7 +29,8 @@
 #include "PowerManager.h"
 #include "nsIDOMWakeLock.h"
 #include "nsIPowerManagerService.h"
-#include "SmsManager.h"
+#include "mozilla/dom/SmsManager.h"
+#include "mozilla/dom/MobileMessageManager.h"
 #include "nsISmsService.h"
 #include "mozilla/Hal.h"
 #include "nsIWebNavigation.h"
@@ -67,7 +68,6 @@
 #include "nsIDOMGlobalPropertyInitializer.h"
 
 using namespace mozilla::dom::power;
-using namespace mozilla::dom::sms;
 
 // This should not be in the namespace.
 DOMCI_DATA(Navigator, mozilla::dom::Navigator)
@@ -118,6 +118,7 @@ NS_INTERFACE_MAP_BEGIN(Navigator)
   NS_INTERFACE_MAP_ENTRY(nsINavigatorBattery)
   NS_INTERFACE_MAP_ENTRY(nsIDOMNavigatorDesktopNotification)
   NS_INTERFACE_MAP_ENTRY(nsIDOMMozNavigatorSms)
+  NS_INTERFACE_MAP_ENTRY(nsIDOMMozNavigatorMobileMessage)
 #ifdef MOZ_MEDIA_NAVIGATOR
   NS_INTERFACE_MAP_ENTRY(nsINavigatorUserMedia)
   NS_INTERFACE_MAP_ENTRY(nsIDOMNavigatorUserMedia)
@@ -181,6 +182,11 @@ Navigator::Invalidate()
   if (mSmsManager) {
     mSmsManager->Shutdown();
     mSmsManager = nullptr;
+  }
+
+  if (mMobileMessageManager) {
+    mMobileMessageManager->Shutdown();
+    mMobileMessageManager = nullptr;
   }
 
 #ifdef MOZ_B2G_RIL
@@ -1166,6 +1172,41 @@ Navigator::GetMozSms(nsIDOMMozSmsManager** aSmsManager)
   }
 
   NS_ADDREF(*aSmsManager = mSmsManager);
+
+  return NS_OK;
+}
+
+//*****************************************************************************
+//    Navigator::nsIDOMNavigatorMobileMessage
+//*****************************************************************************
+
+NS_IMETHODIMP
+Navigator::GetMozMobileMessage(nsIDOMMozMobileMessageManager** aMobileMessageManager)
+{
+  *aMobileMessageManager = nullptr;
+
+#ifndef MOZ_WEBSMS_BACKEND
+  return NS_OK;
+#endif
+
+  // First of all, the general pref has to be turned on.
+  bool enabled = false;
+  Preferences::GetBool("dom.sms.enabled", &enabled);
+  NS_ENSURE_TRUE(enabled, NS_OK);
+
+  if (!mMobileMessageManager) {
+    nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mWindow);
+    NS_ENSURE_TRUE(window && window->GetDocShell(), NS_OK);
+
+    if (!CheckPermission("sms")) {
+      return NS_OK;
+    }
+
+    mMobileMessageManager = new MobileMessageManager();
+    mMobileMessageManager->Init(window);
+  }
+
+  NS_ADDREF(*aMobileMessageManager = mMobileMessageManager);
 
   return NS_OK;
 }
