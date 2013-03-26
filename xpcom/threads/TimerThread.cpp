@@ -14,6 +14,19 @@
 #include "mozilla/Services.h"
 
 #include <math.h>
+#include <signal.h>
+
+#include "android/log.h"
+#define ALOG(args...)  __android_log_print(ANDROID_LOG_INFO, "TimerThread", args)
+
+#define DUMP_VFP_REGISTER(sReg, dDump ) \
+        __asm__ __volatile__ ( \
+        "vmov.f64 %P0,"sReg"\n" \ 
+            : "=w" (dDump) \
+            : \
+            : sReg \
+        );
+
 
 using namespace mozilla;
 
@@ -200,6 +213,7 @@ NS_IMETHODIMP TimerThread::Run()
   // We use this to decide how to round our wait times later
   int32_t halfMicrosecondsIntervalResolution = high >> 1;
 
+  double dTmp;
   while (!mShutdown) {
     // Have to use PRIntervalTime here, since PR_WaitCondVar takes it
     PRIntervalTime waitFor;
@@ -282,7 +296,9 @@ NS_IMETHODIMP TimerThread::Run()
         // resolution. We use halfMicrosecondsIntervalResolution, calculated
         // before, to do the optimal rounding (i.e., of how to decide what
         // interval is so small we should not wait at all).
-        double microseconds = (timeout - now).ToMilliseconds()*1000;
+	volatile int iOneThousand = 1000;
+        double microseconds = (timeout - now).ToMilliseconds()*iOneThousand;
+        //double microseconds = (timeout - now).ToMilliseconds()*1000;
         if (microseconds < halfMicrosecondsIntervalResolution)
           goto next; // round down; execute event now
         waitFor = PR_MicrosecondsToInterval(static_cast<uint32_t>(microseconds)); // Floor is accurate enough.
