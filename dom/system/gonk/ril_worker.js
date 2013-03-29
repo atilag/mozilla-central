@@ -2479,6 +2479,7 @@ let RIL = {
    * @param profile Profile supported by ME.
    */
   sendStkTerminalProfile: function sendStkTerminalProfile(profile) {
+    return;
     Buf.newParcel(REQUEST_STK_SET_PROFILE);
     Buf.writeInt32(profile.length * 2);
     for (let i = 0; i < profile.length; i++) {
