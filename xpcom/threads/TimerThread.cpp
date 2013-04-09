@@ -296,14 +296,19 @@ NS_IMETHODIMP TimerThread::Run()
         // resolution. We use halfMicrosecondsIntervalResolution, calculated
         // before, to do the optimal rounding (i.e., of how to decide what
         // interval is so small we should not wait at all).
-	volatile int iOneThousand = 1000;
-        double microseconds = (timeout - now).ToMilliseconds()*iOneThousand;
-        //double microseconds = (timeout - now).ToMilliseconds()*1000;
+	//volatile int iOneThousand = 1000;
+        //double microseconds = (timeout - now).ToMilliseconds()*iOneThousand;
+        double microseconds = (timeout - now).ToMilliseconds()*1000;
         if (microseconds < halfMicrosecondsIntervalResolution)
           goto next; // round down; execute event now
         waitFor = PR_MicrosecondsToInterval(static_cast<uint32_t>(microseconds)); // Floor is accurate enough.
         if (waitFor == 0)
           waitFor = 1; // round up, wait the minimum time we can wait
+
+        if (waitFor > 4000000 || microseconds < 0.0) {
+          ALOG("****warning: big timer: waitFor=%d, microseconds=%f",
+              waitFor, microseconds);
+        }
       }
 
 #ifdef DEBUG_TIMERS
