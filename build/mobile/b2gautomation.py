@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import automationutils
+import mozcrash
 import threading
 import os
 import Queue
@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import traceback
 
 from automation import Automation
 from devicemanager import NetworkTools
@@ -81,6 +82,10 @@ class B2GRemoteAutomation(Automation):
         if env is None:
             env = {}
 
+        if crashreporter:
+            env['MOZ_CRASHREPORTER'] = '1'
+            env['MOZ_CRASHREPORTER_NO_REPORT'] = '1'
+
         # We always hide the results table in B2G; it's much slower if we don't.
         env['MOZ_HIDE_RESULTS_TABLE'] = '1'
         return env
@@ -100,15 +105,20 @@ class B2GRemoteAutomation(Automation):
         return active
 
     def checkForCrashes(self, directory, symbolsPath):
-        # XXX: This will have to be updated after crash reporting on b2g
-        # is in place.
-        dumpDir = tempfile.mkdtemp()
-        self._devicemanager.getDirectory(self._remoteProfile + '/minidumps/', dumpDir)
-        automationutils.checkForCrashes(dumpDir, symbolsPath, self.lastTestSeen)
-        try:
-            shutil.rmtree(dumpDir)
-        except:
-            print "WARNING: unable to remove directory: %s" % (dumpDir)
+        crashed = False
+        remote_dump_dir = self._remoteProfile + '/minidumps'
+        print "checking for crashes in '%s'" % remote_dump_dir
+        if self._devicemanager.dirExists(remote_dump_dir):
+            local_dump_dir = tempfile.mkdtemp()
+            self._devicemanager.getDirectory(remote_dump_dir, local_dump_dir)
+            try:
+                crashed = mozcrash.check_for_crashes(local_dump_dir, symbolsPath, test_name=self.lastTestSeen)
+            except:
+                traceback.print_exc()
+            finally:
+                shutil.rmtree(local_dump_dir)
+                self._devicemanager.removeDir(remote_dump_dir)
+        return crashed
 
     def initializeProfile(self,  profileDir, extraPrefs=[],
                           useServerLocations=False,
@@ -304,9 +314,9 @@ class B2GRemoteAutomation(Automation):
             # into a queue.  The lines in this queue are
             # retrieved and returned by accessing the stdout property of
             # this class.
-            cmd = [self.dm.adbPath]
-            if self.dm.deviceSerial:
-                cmd.extend(['-s', self.dm.deviceSerial])
+            cmd = [self.dm._adbPath]
+            if self.dm._deviceSerial:
+                cmd.extend(['-s', self.dm._deviceSerial])
             cmd.append('shell')
             cmd.append('/system/bin/b2g.sh')
             proc = threading.Thread(target=self._save_stdout_proc, args=(cmd, self.queue))

@@ -344,7 +344,7 @@ this.PhoneNumber = (function (dataBase) {
     if (md.nationalPrefixForParsing) {
       // Some regions have specific national prefix parse rules. Apply those.
       var withoutPrefix = number.replace(md.nationalPrefixForParsing,
-                                         md.nationalPrefixTransformRule);
+                                         md.nationalPrefixTransformRule || '');
       if (ret = ParseNationalNumber(withoutPrefix, md))
         return ret;
     } else {
@@ -359,15 +359,15 @@ this.PhoneNumber = (function (dataBase) {
     if (ret = ParseNationalNumber(number, md))
       return ret;
 
-    // If the number matches the possible numbers of the current region,
-    // return it as a possible number.
-    if (md.possiblePattern.test(number))
-      return new NationalNumber(md, number);
-
     // Now lets see if maybe its an international number after all, but
     // without '+' or the international prefix.
     if (ret = ParseInternationalNumber(number))
       return ret;
+
+    // If the number matches the possible numbers of the current region,
+    // return it as a possible number.
+    if (md.possiblePattern.test(number))
+      return new NationalNumber(md, number);
 
     // We couldn't parse the number at all.
     return null;

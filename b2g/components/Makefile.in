@@ -24,6 +24,7 @@ EXTRA_PP_COMPONENTS = \
         ContentHandler.js \
         ContentPermissionPrompt.js \
         DirectoryProvider.js \
+        FilePicker.js \
         MailtoProtocolHandler.js \
         MozKeyboard.js \
         ProcessGlobal.js \
@@ -38,6 +39,7 @@ EXTRA_JS_MODULES = \
 	Keyboard.jsm \
 	TelURIParser.jsm \
 	SignInToWebsite.jsm \
+	ErrorPage.jsm \
 	$(NULL)
 
 TEST_DIRS = \

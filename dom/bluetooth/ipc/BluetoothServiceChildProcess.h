@@ -101,13 +101,6 @@ public:
                       mozilla::ipc::UnixSocketConsumer* aConsumer,
                       BluetoothReplyRunnable* aRunnable) MOZ_OVERRIDE;
 
-  virtual nsresult
-  ListenSocketViaService(int aChannel,
-                         BluetoothSocketType aType,
-                         bool aAuth,
-                         bool aEncrypt,
-                         mozilla::ipc::UnixSocketConsumer* aConsumer) MOZ_OVERRIDE;
-
   virtual bool
   SetPinCodeInternal(const nsAString& aDeviceAddress,
                      const nsAString& aPinCode,
@@ -180,6 +173,10 @@ private:
   // This method should never be called.
   virtual nsresult
   StopInternal() MOZ_OVERRIDE;
+
+  // This method should never be called.
+  virtual bool
+  IsEnabledInternal() MOZ_OVERRIDE;
 
   // Should never be called from the child
   virtual nsresult

@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-MARIONETTE_TIMEOUT = 20000;
+MARIONETTE_TIMEOUT = 60000;
 
 SpecialPowers.addPermission("sms", true, document);
 SpecialPowers.setBoolPref("dom.sms.enabled", true);
@@ -190,6 +190,7 @@ function verifyFoundMsgs(foundSmsList, reverse) {
   }
   for (var x = 0; x < numberMsgs; x++) {
     is(foundSmsList[x].id, smsList[x].id, "id");
+    is(foundSmsList[x].threadId, smsList[x].threadId, "thread id");
     is(foundSmsList[x].body, smsList[x].body, "body");
     is(foundSmsList[x].delivery, smsList[x].delivery, "delivery");
     is(foundSmsList[x].read, smsList[x].read, "read");

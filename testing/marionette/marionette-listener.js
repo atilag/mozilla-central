@@ -64,6 +64,8 @@ let touches = [];
 // For assigning unique ids to all touches
 let nextTouchId = 1000;
 let touchIds = {};
+// last touch for each fingerId
+let multiLast = {};
 // last touch for single finger
 let lastTouch = null;
 /**
@@ -108,7 +110,9 @@ function startListeners() {
   addMessageListenerId("Marionette:doubleTap", doubleTap);
   addMessageListenerId("Marionette:press", press);
   addMessageListenerId("Marionette:release", release);
+  addMessageListenerId("Marionette:cancelTouch", cancelTouch);
   addMessageListenerId("Marionette:actionChain", actionChain);
+  addMessageListenerId("Marionette:multiAction", multiAction);
   addMessageListenerId("Marionette:setSearchTimeout", setSearchTimeout);
   addMessageListenerId("Marionette:goUrl", goUrl);
   addMessageListenerId("Marionette:getUrl", getUrl);
@@ -200,7 +204,9 @@ function deleteSession(msg) {
   removeMessageListenerId("Marionette:doubleTap", doubleTap);
   removeMessageListenerId("Marionette:press", press);
   removeMessageListenerId("Marionette:release", release);
+  removeMessageListenerId("Marionette:cancelTouch", cancelTouch);
   removeMessageListenerId("Marionette:actionChain", actionChain);
+  removeMessageListenerId("Marionette:multiAction", multiAction);
   removeMessageListenerId("Marionette:setSearchTimeout", setSearchTimeout);
   removeMessageListenerId("Marionette:goUrl", goUrl);
   removeMessageListenerId("Marionette:getTitle", getTitle);
@@ -302,12 +308,11 @@ function resetValues() {
  * Returns a content sandbox that can be used by the execute_foo functions.
  */
 function createExecuteContentSandbox(aWindow, timeout) {
-  let sandbox = new Cu.Sandbox(aWindow);
+  let sandbox = new Cu.Sandbox(aWindow, {sandboxPrototype: aWindow});
   sandbox.global = sandbox;
   sandbox.window = aWindow;
   sandbox.document = sandbox.window.document;
   sandbox.navigator = sandbox.window.navigator;
-  sandbox.__proto__ = sandbox.window;
   sandbox.testUtils = utils;
 
   let marionette = new Marionette(this, aWindow, "content",
@@ -506,7 +511,7 @@ function executeWithCallback(msg, useFinish) {
 
   originalOnError = curWindow.onerror;
   curWindow.onerror = function errHandler(errMsg, url, line) {
-    sandbox.asyncComplete(errMsg, 17, null, asyncTestCommandId);
+    sandbox.asyncComplete(errMsg, 17, "@" + url + ", line " + line, asyncTestCommandId);
     curWindow.onerror = originalOnError;
   };
 
@@ -706,19 +711,11 @@ function coordinates(target, x0, y0, x1, y1) {
  * This function returns if the element is in viewport 
  */
 function elementInViewport(el) {
-  let top = el.offsetTop;
-  let left = el.offsetLeft;
-  let width = el.offsetWidth;
-  let height = el.offsetHeight;
-  while(el.offsetParent) {
-    el = el.offsetParent;
-    top += el.offsetTop;
-    left += el.offsetLeft;
-  }
-  return (top >= curWindow.pageYOffset &&
-          left >= curWindow.pageXOffset &&
-          (top + height) <= (curWindow.pageYOffset + curWindow.innerHeight) &&
-          (left + width) <= (curWindow.pageXOffset + curWindow.innerWidth)
+  let rect = el.getBoundingClientRect();
+  return (rect.top >= curWindow.pageYOffset &&
+          rect.left >= curWindow.pageXOffset &&
+          rect.bottom <= (curWindow.pageYOffset + curWindow.innerHeight) &&
+          rect.right <= (curWindow.pageXOffset + curWindow.innerWidth)
          );
 }
 
@@ -730,6 +727,9 @@ function checkVisible(el, command_id) {
   let visible = utils.isElementDisplayed(el);
   if (!visible) {
     return false;
+  }
+  if (el.tagName.toLowerCase() === 'body') {
+    return true;
   }
   if (!elementInViewport(el)) {
     //check if scroll function exist. If so, call it.
@@ -889,7 +889,29 @@ function release(msg) {
       sendOk(msg.json.command_id);
     }
     else {
-      sendError("Element has not be pressed: InvalidElementCoordinates", 29, null, command_id);
+      sendError("Element has not been pressed: no such element", 7, null, command_id);
+    }
+  }
+  catch (e) {
+    sendError(e.message, e.code, e.stack, msg.json.command_id);
+  }
+}
+
+/**
+ * Function to cancel a touch event
+ */
+function cancelTouch(msg) {
+  let command_id = msg.json.command_id;
+  try {
+    let id = msg.json.touchId;
+    if (id in touchIds) {
+      let startTouch = touchIds[id];
+      emitTouchEvent('touchcancel', startTouch);
+      delete touchIds[id];
+      sendOk(msg.json.command_id);
+    }
+    else {
+      sendError("Element not previously interacted with", 7, null, command_id);
     }
   }
   catch (e) {
@@ -906,6 +928,7 @@ function actions(finger, touchId, command_id, i){
     i = 0;
   }
   if (i == finger.length) {
+    sendResponse({value: touchId}, command_id);
     return;
   }
   let pack = finger[i];
@@ -929,14 +952,31 @@ function actions(finger, touchId, command_id, i){
       touch = createATouch(el, corx, cory, touchId);
       lastTouch = touch;
       emitTouchEvent('touchstart', touch);
+      // check if it's a long press
+      // standard waiting time to fire contextmenu
+      let standard = Services.prefs.getIntPref("ui.click_hold_context_menus.delay");
+      // long press only happens when wait follows press
+      if (finger[i] != undefined && finger[i][0] == 'wait' && finger[i][1] != null && finger[i][1]*1000 >= standard) {
+        finger[i][1] = finger[i][1] - standard/1000;
+        finger.splice(i, 0, ['wait', standard/1000], ['longPress']);
+      }
       actions(finger,touchId, command_id, i);
       break;
     case 'release':
+      if (lastTouch == null) {
+        sendError("Element has not been pressed: no such element", 7, null, command_id);
+        return;
+      }
       touch = lastTouch;
+      lastTouch = null;
       emitTouchEvent('touchend', touch);
       actions(finger, touchId, command_id, i);
       break;
     case 'move':
+      if (lastTouch == null) {
+        sendError("Element has not been pressed: no such element", 7, null, command_id);
+        return;
+      }
       el = elementManager.getKnownElement(pack[1], curWindow);
       let boxTarget = el.getBoundingClientRect();
       let startElement = lastTouch.target;
@@ -949,6 +989,10 @@ function actions(finger, touchId, command_id, i){
       actions(finger, touchId, command_id, i);
       break;
     case 'moveByOffset':
+      if (lastTouch == null) {
+        sendError("Element has not been pressed: no such element", 7, null, command_id);
+        return;
+      }
       el = lastTouch.target;
       let doc = el.ownerDocument;
       let win = doc.defaultView;
@@ -972,6 +1016,20 @@ function actions(finger, touchId, command_id, i){
         actions(finger, touchId, command_id, i);
       }
       break;
+    case 'cancel':
+      touch = lastTouch;
+      emitTouchEvent('touchcancel', touch);
+      lastTouch = null;
+      actions(finger, touchId, command_id, i);
+      break;
+    case 'longPress':
+      let event = curWindow.document.createEvent('HTMLEvents');
+      event.initEvent('contextmenu',
+                      true,
+                      true);
+      lastTouch.target.dispatchEvent(event);
+      actions(finger, touchId, command_id, i);
+      break;
   }
 }
 
@@ -980,14 +1038,194 @@ function actions(finger, touchId, command_id, i){
  */
 function actionChain(msg) {
   let command_id = msg.json.command_id;
-  let args = msg.json.value;
+  let args = msg.json.chain;
+  let touchId = msg.json.nextId;
   try {
     let commandArray = elementManager.convertWrappedArguments(args, curWindow);
-    // each finger associates with one touchId
-    let touchId = nextTouchId++;
     // loop the action array [ ['press', id], ['move', id], ['release', id] ]
+    if (touchId == null) {
+      touchId = nextTouchId++;
+    }
     actions(commandArray, touchId, command_id);
-    sendOk(msg.json.command_id);
+  }
+  catch (e) {
+    sendError(e.message, e.code, e.stack, msg.json.command_id);
+  }
+}
+
+/**
+ * Function to emit touch events which allow multi touch on the screen
+ * @param type represents the type of event, touch represents the current touch,touches are all pending touches
+ */
+function emitMultiEvents(type, touch, touches) {
+  let target = touch.target;
+  let doc = target.ownerDocument;
+  let win = doc.defaultView;
+  // touches that are in the same document
+  let documentTouches = doc.createTouchList(touches.filter(function(t) {
+    return t.target.ownerDocument === doc;
+  }));
+  // touches on the same target
+  let targetTouches = doc.createTouchList(touches.filter(function(t) {
+    return t.target === target;
+  }));
+  // Create changed touches
+  let changedTouches = doc.createTouchList(touch);
+  // Create the event object
+  let event = curWindow.document.createEvent('TouchEvent');
+  event.initTouchEvent(type,
+                       true,
+                       true,
+                       win,
+                       0,
+                       false, false, false, false,
+                       documentTouches,
+                       targetTouches,
+                       changedTouches);
+  target.dispatchEvent(event);
+}
+
+/**
+ * Function to dispatch one set of actions
+ * @param touches represents all pending touches, batchIndex represents the batch we are dispatching right now
+ */
+function setDispatch(batches, touches, command_id, batchIndex) {
+  if (typeof batchIndex === "undefined") {
+    batchIndex = 0;
+  }
+  // check if all the sets have been fired
+  if (batchIndex >= batches.length) {
+    multiLast = {};
+    sendOk(command_id);
+    return;
+  }
+  // a set of actions need to be done
+  let batch = batches[batchIndex];
+  // each action for some finger
+  let pack;
+  // the touch id for the finger (pack)
+  let touchId;
+  // command for the finger
+  let command;
+  // touch that will be created for the finger
+  let el;
+  let corx;
+  let cory;
+  let touch;
+  let lastTouch;
+  let touchIndex;
+  let waitTime = 0;
+  let maxTime = 0;
+  batchIndex++;
+  // loop through the batch
+  for (let i = 0; i < batch.length; i++) {
+    pack = batch[i];
+    touchId = pack[0];
+    command = pack[1];
+    switch (command) {
+      case 'press':
+        el = elementManager.getKnownElement(pack[2], curWindow);
+        // after this block, the element will be scrolled into view
+        if (!checkVisible(el, command_id)) {
+           sendError("Element is not currently visible and may not be manipulated", 11, null, command_id);
+           return;
+        }
+        corx = pack[3];
+        cory = pack[4];
+        touch = createATouch(el, corx, cory, touchId);
+        multiLast[touchId] = touch;
+        touches.push(touch);
+        emitMultiEvents('touchstart', touch, touches);
+        break;
+      case 'release':
+        touch = multiLast[touchId];
+        // the index of the previous touch for the finger may change in the touches array
+        touchIndex = touches.indexOf(touch);
+        touches.splice(touchIndex, 1);
+        emitMultiEvents('touchend', touch, touches);
+        break;
+      case 'move':
+        el = elementManager.getKnownElement(pack[2], curWindow);
+        lastTouch = multiLast[touchId];
+        let boxTarget = el.getBoundingClientRect();
+        let startTarget = lastTouch.target;
+        let boxStart = startTarget.getBoundingClientRect();
+        // note here corx and cory are relative to the target, not the viewport
+        // we always want to touch the center of the element if the element is specified
+        corx = boxTarget.left - boxStart.left + boxTarget.width * 0.5;
+        cory = boxTarget.top - boxStart.top + boxTarget.height * 0.5;
+        touch = createATouch(startTarget, corx, cory, touchId);
+        touchIndex = touches.indexOf(lastTouch);
+        touches[touchIndex] = touch;
+        multiLast[touchId] = touch;
+        emitMultiEvents('touchmove', touch, touches);
+        break;
+      case 'moveByOffset':
+        el = multiLast[touchId].target;
+        lastTouch = multiLast[touchId];
+        touchIndex = touches.indexOf(lastTouch);
+        let doc = el.ownerDocument;
+        let win = doc.defaultView;
+        // since x and y are relative to the last touch, therefore, it's relative to the position of the last touch
+        let clientX = lastTouch.clientX + pack[2],
+            clientY = lastTouch.clientY + pack[3];
+        let pageX = clientX + win.pageXOffset,
+            pageY = clientY + win.pageYOffset;
+        let screenX = clientX + win.mozInnerScreenX,
+            screenY = clientY + win.mozInnerScreenY;
+        touch = doc.createTouch(win, el, touchId, pageX, pageY, screenX, screenY, clientX, clientY);
+        touches[touchIndex] = touch;
+        multiLast[touchId] = touch;
+        emitMultiEvents('touchmove', touch, touches);
+        break;
+      case 'wait':
+        if (pack[2] != undefined ) {
+          waitTime = pack[2]*1000;
+          if (waitTime > maxTime) {
+            maxTime = waitTime;
+          }
+        }
+        break;
+    }//end of switch block
+  }//end of for loop
+  if (maxTime != 0) {
+    checkTimer.initWithCallback(function(){setDispatch(batches, touches, command_id, batchIndex);}, maxTime, Ci.nsITimer.TYPE_ONE_SHOT);
+  }
+  else {
+    setDispatch(batches, touches, command_id, batchIndex);
+  }
+}
+
+/**
+ * Function to start multi-action
+ */
+function multiAction(msg) {
+  let command_id = msg.json.command_id;
+  let args = msg.json.value;
+  // maxlen is the longest action chain for one finger
+  let maxlen = msg.json.maxlen;
+  try {
+    // unwrap the original nested array
+    let commandArray = elementManager.convertWrappedArguments(args, curWindow);
+    let concurrentEvent = [];
+    let temp;
+    for (let i = 0; i < maxlen; i++) {
+      let row = [];
+      for (let j = 0; j < commandArray.length; j++) {
+        if (commandArray[j][i] != undefined) {
+          // add finger id to the front of each action, i.e. [finger_id, action, element]
+          temp = commandArray[j][i];
+          temp.unshift(j);
+          row.push(temp);
+        }
+      }
+      concurrentEvent.push(row);
+    }
+    // now concurrent event is made of sets where each set contain a list of actions that need to be fired.
+    // note: each action belongs to a different finger
+    // pendingTouches keeps track of current touches that's on the screen
+    let pendingTouches = [];
+    setDispatch(concurrentEvent, pendingTouches, command_id);
   }
   catch (e) {
     sendError(e.message, e.code, e.stack, msg.json.command_id);
@@ -1143,7 +1381,17 @@ function clickElement(msg) {
   let el;
   try {
     el = elementManager.getKnownElement(msg.json.element, curWindow);
-    utils.click(el);
+    if (checkVisible(el, command_id)) {
+      if (utils.isElementEnabled(el)) {
+        utils.synthesizeMouseAtCenter(el, {}, el.ownerDocument.defaultView)
+      }
+      else {
+        sendError("Element is not Enabled", 12, null, command_id)
+      }
+    }
+    else {
+      sendError("Element is not visible", 11, null, command_id)
+    }
     sendOk(command_id);
   }
   catch (e) {
@@ -1259,8 +1507,13 @@ function sendKeysToElement(msg) {
   let command_id = msg.json.command_id;
   try {
     let el = elementManager.getKnownElement(msg.json.element, curWindow);
-    utils.type(curWindow.document, el, msg.json.value.join(""), true);
-    sendOk(command_id);
+    if (checkVisible(el, command_id)) {
+      utils.type(curWindow.document, el, msg.json.value.join(""), true);
+      sendOk(command_id);
+    }
+    else {
+      sendError("Element is not visible", 11, null, command_id)
+    }
   }
   catch (e) {
     sendError(e.message, e.code, e.stack, command_id);
@@ -1274,31 +1527,11 @@ function getElementPosition(msg) {
   let command_id = msg.json.command_id;
   try{
     let el = elementManager.getKnownElement(msg.json.element, curWindow);
-    var x = el.offsetLeft;
-    var y = el.offsetTop;
-    var elementParent = el.offsetParent;
-    while (elementParent != null) {
-      if (elementParent.tagName == "TABLE") {
-        var parentBorder = parseInt(elementParent.border);
-        if (isNaN(parentBorder)) {
-          var parentFrame = elementParent.getAttribute('frame');
-          if (parentFrame != null) {
-            x += 1;
-            y += 1;
-          }
-        } else if (parentBorder > 0) {
-          x += parentBorder;
-          y += parentBorder;
-        }
-      }
-      x += elementParent.offsetLeft;
-      y += elementParent.offsetTop;
-      elementParent = elementParent.offsetParent;
-    }
+    let rect = el.getBoundingClientRect();
 
     let location = {};
-    location.x = x;
-    location.y = y;
+    location.x = rect.left;
+    location.y = rect.top;
 
     sendResponse({value: location}, command_id);
   }
@@ -1362,6 +1595,7 @@ function switchToFrame(msg) {
     if(msg.json.focus == true) {
       curWindow.focus();
     }
+    sandbox = null;
     checkTimer.initWithCallback(checkLoad, 100, Ci.nsITimer.TYPE_ONE_SHOT);
     return;
   }

@@ -30,6 +30,8 @@ public:
 
   virtual nsresult StopInternal();
 
+  virtual bool IsEnabledInternal();
+
   virtual nsresult GetDefaultAdapterPathInternal(BluetoothReplyRunnable* aRunnable);
 
   virtual nsresult GetPairedDevicePropertiesInternal(const nsTArray<nsString>& aDeviceAddresses,
@@ -97,13 +99,6 @@ public:
                       bool aEncrypt,
                       mozilla::ipc::UnixSocketConsumer* aConsumer,
                       BluetoothReplyRunnable* aRunnable);
-
-  virtual nsresult
-  ListenSocketViaService(int aChannel,
-                         BluetoothSocketType aType,
-                         bool aAuth,
-                         bool aEncrypt,
-                         mozilla::ipc::UnixSocketConsumer* aConsumer);
 
   virtual nsresult
   CreatePairedDeviceInternal(const nsAString& aAdapterPath,

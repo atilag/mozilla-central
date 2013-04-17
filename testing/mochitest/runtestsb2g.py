@@ -18,9 +18,7 @@ from runtests import Mochitest
 from runtests import MochitestOptions
 from runtests import MochitestServer
 
-import devicemanager
-import devicemanagerADB
-
+from mozdevice import DeviceManagerADB, DMError
 from marionette import Marionette
 
 
@@ -42,7 +40,9 @@ loader.loadSubScript("chrome://specialpowers/content/SpecialPowersObserver.js", 
 let specialPowersObserver = new specialpowers.SpecialPowersObserver();
 specialPowersObserver.init();
 
-let mm = container.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
+let fl = container.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
+fl.activateRemoteFrame();
+let mm = fl.messageManager;
 mm.addMessageListener("SPPrefService", specialPowersObserver);
 mm.addMessageListener("SPProcessCrashService", specialPowersObserver);
 mm.addMessageListener("SPPingService", specialPowersObserver);
@@ -301,10 +301,7 @@ class B2GMochitest(Mochitest, B2GMochitestMixin):
         self.originalProfilesIni = None
 
     def copyRemoteFile(self, src, dest):
-        if self._dm.useDDCopy:
-            self._dm._checkCmdAs(['shell', 'dd', 'if=%s' % src, 'of=%s' % dest])
-        else:
-            self._dm._checkCmdAs(['shell', 'cp', src, dest])
+        self._dm._checkCmdAs(['shell', 'dd', 'if=%s' % src, 'of=%s' % dest])
 
     def origUserJSExists(self):
         return self._dm.fileExists('/data/local/user.js.orig')
@@ -321,7 +318,7 @@ class B2GMochitest(Mochitest, B2GMochitestMixin):
                 try:
                     self._dm._checkCmdAs(['shell', 'rm', '-rf',
                                           os.path.join(self.bundlesDir, filename)])
-                except devicemanager.DMError:
+                except DMError:
                     pass
 
         if not options.emulator:
@@ -470,7 +467,7 @@ class B2GMochitest(Mochitest, B2GMochitestMixin):
         self._dm._checkCmdAs(['shell', 'rm', '-r', self.remoteProfile])
         try:
             self._dm.pushDir(options.profilePath, self.remoteProfile)
-        except devicemanager.DMError:
+        except DMError:
             print "Automation Error: Unable to copy profile to device."
             raise
 
@@ -483,7 +480,7 @@ class B2GMochitest(Mochitest, B2GMochitestMixin):
                                   os.path.join(self.bundlesDir, filename)])
         try:
             self._dm.pushDir(extensionDir, self.bundlesDir)
-        except devicemanager.DMError:
+        except DMError:
             print "Automation Error: Unable to copy extensions to device."
             raise
 
@@ -561,6 +558,8 @@ def run_remote_mochitests(automation, parser, options):
             kwargs['logcat_dir'] = options.logcat_dir
         if options.busybox:
             kwargs['busybox'] = options.busybox
+        if options.symbolsPath:
+            kwargs['symbols_path'] = options.symbolsPath
     # needless to say sdcard is only valid if using an emulator
     if options.sdcard:
         kwargs['sdcard'] = options.sdcard
@@ -581,7 +580,7 @@ def run_remote_mochitests(automation, parser, options):
     if options.deviceIP:
         kwargs.update({'host': options.deviceIP,
                        'port': options.devicePort})
-    dm = devicemanagerADB.DeviceManagerADB(**kwargs)
+    dm = DeviceManagerADB(**kwargs)
     automation.setDeviceManager(dm)
     options = parser.verifyRemoteOptions(options, automation)
     if (options == None):

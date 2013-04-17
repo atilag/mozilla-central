@@ -15,6 +15,7 @@
 #ifdef MOZ_B2G_BT
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/sco.h>
+#include <bluetooth/l2cap.h>
 #include <bluetooth/rfcomm.h>
 #endif
 #include <stdlib.h>
@@ -33,6 +34,7 @@ union sockaddr_any {
 #ifdef MOZ_B2G_BT
   struct sockaddr_sco sco;
   struct sockaddr_rc rc;
+  struct sockaddr_l2 l2;
 #endif
   // ... others
 };
@@ -142,7 +144,7 @@ public:
 
   virtual ~UnixSocketConsumer();
 
-  SocketConnectionStatus GetConnectionStatus()
+  SocketConnectionStatus GetConnectionStatus() const
   {
     return mConnectionStatus;
   }
@@ -153,15 +155,7 @@ public:
    *
    * @param aMessage Data received from the socket.
    */
-  virtual void ReceiveSocketData(UnixSocketRawData* aMessage) = 0;
-
-  /**
-   * Queue data to be sent to the socket. Can only be called on the IO thread.
-   *
-   * @param aImpl Implementation to send the data on.
-   * @param aData Data to be sent to the socket.
-   */
-  static void RawSendSocketData(UnixSocketImpl* aImpl, UnixSocketRawData* aData);
+  virtual void ReceiveSocketData(nsAutoPtr<UnixSocketRawData>& aMessage) = 0;
 
   /**
    * Queue data to be sent to the socket on the IO thread. Can only be called on
@@ -247,12 +241,8 @@ public:
    */
   void GetSocketAddr(nsAString& aAddrStr);
 
-protected:
-  // This wants to be private (the class is opaque to consumers) but needs to
-  // be protected because of the BluetoothOppManager.
-  UnixSocketImpl* mImpl;
-
 private:
+  UnixSocketImpl* mImpl;
   SocketConnectionStatus mConnectionStatus;
 };
 

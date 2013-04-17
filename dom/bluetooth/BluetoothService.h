@@ -88,18 +88,6 @@ public:
   DistributeSignal(const BluetoothSignal& aEvent);
 
   /**
-   * Called when a BluetoothManager is created.
-   */
-  void
-  RegisterManager(BluetoothManager* aManager);
-
-  /**
-   * Called when a BluetoothManager is destroyed.
-   */
-  void
-  UnregisterManager(BluetoothManager* aManager);
-
-  /**
    * Called when get a Bluetooth Signal from BluetoothDBusService
    *
    */
@@ -286,13 +274,6 @@ public:
   StopSendingFile(const nsAString& aDeviceAddress,
                   BluetoothReplyRunnable* aRunnable) = 0;
 
-  virtual nsresult
-  ListenSocketViaService(int aChannel,
-                         BluetoothSocketType aType,
-                         bool aAuth,
-                         bool aEncrypt,
-                         mozilla::ipc::UnixSocketConsumer* aConsumer) = 0;
-
   virtual void
   ConfirmReceivingFile(const nsAString& aDeviceAddress, bool aConfirm,
                        BluetoothReplyRunnable* aRunnable) = 0;
@@ -339,7 +320,7 @@ protected:
   virtual nsresult
   StartInternal() = 0;
 
-  /** 
+  /**
    * Platform specific startup functions go here. Usually deals with member
    * variables, so not static. Guaranteed to be called outside of main thread.
    *
@@ -347,6 +328,15 @@ protected:
    */
   virtual nsresult
   StopInternal() = 0;
+
+  /**
+   * Platform specific startup functions go here. Usually deals with member
+   * variables, so not static. Guaranteed to be called outside of main thread.
+   *
+   * @return true if Bluetooth is enabled, false otherwise
+   */
+  virtual bool
+  IsEnabledInternal() = 0;
 
   /**
    * Called when XPCOM first creates this service.
@@ -398,9 +388,6 @@ protected:
   BluetoothSignalObserverTable;
 
   BluetoothSignalObserverTable mBluetoothSignalObserverTable;
-
-  typedef nsTObserverArray<BluetoothManager*> BluetoothManagerList;
-  BluetoothManagerList mLiveManagers;
 
   bool mEnabled;
 

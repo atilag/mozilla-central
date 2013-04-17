@@ -2418,7 +2418,7 @@ let RIL = {
    *        Boolean indicating the desired power state.
    */
   setRadioPower: function setRadioPower(options) {
-    Buf.newParcel(REQUEST_RADIO_POWER);
+    Buf.newParcel(REQUEST_RADIO_POWER, options);
     Buf.writeUint32(1);
     Buf.writeUint32(options.on ? 1 : 0);
     Buf.sendParcel();
@@ -2584,6 +2584,14 @@ let RIL = {
   },
 
   /**
+   * Cache the request for making an emergency call when radio is off. The
+   * request shall include two types of callback functions. 'callback' is
+   * called when radio is ready, and 'onerror' is called when turning radio
+   * on fails.
+   */
+  cachedDialRequest : null,
+
+  /**
    * Dial the phone.
    *
    * @param number
@@ -2594,30 +2602,60 @@ let RIL = {
    *        Integer doing something XXX TODO
    */
   dial: function dial(options) {
-    let dial_request_type = REQUEST_DIAL;
-    if (this.voiceRegistrationState.emergencyCallsOnly ||
-        options.isDialEmergency) {
-      if (!this._isEmergencyNumber(options.number)) {
-        // Notify error in establishing the call with an invalid number.
-        options.callIndex = -1;
-        options.rilMessageType = "callError";
-        options.error =
-          RIL_CALL_FAILCAUSE_TO_GECKO_CALL_ERROR[CALL_FAIL_UNOBTAINABLE_NUMBER];
-        this.sendDOMMessage(options);
-        return;
-      }
+    let onerror = (function onerror(errorMsg) {
+      options.callIndex = -1;
+      options.rilMessageType = "callError";
+      options.errorMsg = errorMsg;
+      this.sendDOMMessage(options);
+    }).bind(this);
 
-      if (RILQUIRKS_REQUEST_USE_DIAL_EMERGENCY_CALL) {
-        dial_request_type = REQUEST_DIAL_EMERGENCY_CALL;
-      }
+    if (this._isEmergencyNumber(options.number)) {
+      this.dialEmergencyNumber(options, onerror);
     } else {
-      if (this._isEmergencyNumber(options.number) &&
-          RILQUIRKS_REQUEST_USE_DIAL_EMERGENCY_CALL) {
-        dial_request_type = REQUEST_DIAL_EMERGENCY_CALL;
-      }
+      this.dialNonEmergencyNumber(options, onerror);
+    }
+  },
+
+  dialNonEmergencyNumber: function dialNonEmergencyNumber(options, onerror) {
+    if (this.radioState == GECKO_RADIOSTATE_OFF) {
+      // Notify error in establishing the call without radio.
+      onerror(GECKO_ERROR_RADIO_NOT_AVAILABLE);
+      return;
     }
 
-    let token = Buf.newParcel(dial_request_type);
+    if (this.voiceRegistrationState.emergencyCallsOnly ||
+        options.isDialEmergency) {
+      onerror(RIL_CALL_FAILCAUSE_TO_GECKO_CALL_ERROR[CALL_FAIL_UNOBTAINABLE_NUMBER]);
+      return;
+    }
+
+    options.request = REQUEST_DIAL;
+    this.sendDialRequest(options);
+  },
+
+  dialEmergencyNumber: function dialEmergencyNumber(options, onerror) {
+    options.request = RILQUIRKS_REQUEST_USE_DIAL_EMERGENCY_CALL ?
+                      REQUEST_DIAL_EMERGENCY_CALL : REQUEST_DIAL;
+
+    if (this.radioState == GECKO_RADIOSTATE_OFF) {
+      if (DEBUG) debug("Automatically enable radio for an emergency call.");
+
+      if (!this.cachedDialRequest) {
+        this.cachedDialRequest = {};
+      }
+      this.cachedDialRequest.onerror = onerror;
+      this.cachedDialRequest.callback = this.sendDialRequest.bind(this, options);
+
+      // Change radio setting value in settings DB to enable radio.
+      this.sendDOMMessage({rilMessageType: "setRadioEnabled", on: true});
+      return;
+    }
+
+    this.sendDialRequest(options);
+  },
+
+  sendDialRequest: function sendDialRequest(options) {
+    let token = Buf.newParcel(options.request);
     Buf.writeString(options.number);
     Buf.writeUint32(options.clirMode || 0);
     Buf.writeUint32(options.uusInfo || 0);
@@ -4280,22 +4318,33 @@ let RIL = {
         delete newCalls[currentCall.callIndex];
       }
 
-      if (newCall) {
-        // Call is still valid.
-        if (newCall.state != currentCall.state) {
-          // State has changed.
-          if (!currentCall.started && newCall.state == CALL_STATE_ACTIVE) {
-            currentCall.started = new Date().getTime();
-          }
-          currentCall.state = newCall.state;
-          this._handleChangedCallState(currentCall);
-        }
-      } else {
+      if (!newCall) {
         // Call is no longer reported by the radio. Remove from our map and
         // send disconnected state change.
         delete this.currentCalls[currentCall.callIndex];
         this.getFailCauseCode(currentCall);
+        continue;
       }
+
+      // Call is still valid.
+      if (newCall.state == currentCall.state) {
+        continue;
+      }
+
+      // State has changed.
+      if (newCall.state == CALL_STATE_INCOMING &&
+          currentCall.state == CALL_STATE_WAITING) {
+        // Update the call internally but we don't notify DOM since these two
+        // states are viewed as the same one there.
+        currentCall.state = newCall.state;
+        continue;
+      }
+
+      if (!currentCall.started && newCall.state == CALL_STATE_ACTIVE) {
+        currentCall.started = new Date().getTime();
+      }
+      currentCall.state = newCall.state;
+      this._handleChangedCallState(currentCall);
     }
 
     // Go through any remaining calls that are new to us.
@@ -5529,7 +5578,7 @@ RIL[REQUEST_LAST_CALL_FAIL_CAUSE] = function REQUEST_LAST_CALL_FAIL_CAUSE(length
       break;
     default:
       options.rilMessageType = "callError";
-      options.error = RIL_CALL_FAILCAUSE_TO_GECKO_CALL_ERROR[failCause];
+      options.errorMsg = RIL_CALL_FAILCAUSE_TO_GECKO_CALL_ERROR[failCause];
       this.sendDOMMessage(options);
       break;
   }
@@ -5596,6 +5645,12 @@ RIL[REQUEST_SIGNAL_STRENGTH] = function REQUEST_SIGNAL_STRENGTH(length, options)
   if (DEBUG) debug("Signal strength " + JSON.stringify(obj));
   obj.rilMessageType = "signalstrengthchange";
   this.sendDOMMessage(obj);
+
+  if (this.cachedDialRequest && obj.gsmDBM && obj.gsmRelative) {
+    // Radio is ready for making the cached emergency call.
+    this.cachedDialRequest.callback();
+    this.cachedDialRequest = null;
+  }
 };
 RIL[REQUEST_VOICE_REGISTRATION_STATE] = function REQUEST_VOICE_REGISTRATION_STATE(length, options) {
   this._receivedNetworkInfo(NETWORK_INFO_VOICE_REGISTRATION_STATE);
@@ -5632,6 +5687,11 @@ RIL[REQUEST_OPERATOR] = function REQUEST_OPERATOR(length, options) {
 };
 RIL[REQUEST_RADIO_POWER] = function REQUEST_RADIO_POWER(length, options) {
   if (options.rilRequestError) {
+    if (this.cachedDialRequest && options.on) {
+      // Turning on radio fails. Notify the error of making an emergency call.
+      this.cachedDialRequest.onerror(GECKO_ERROR_RADIO_NOT_AVAILABLE);
+      this.cachedDialRequest = null;
+    }
     return;
   }
 
@@ -7140,20 +7200,25 @@ let GsmPDUHelper = {
 
     // Type-of-Address
     let toa = this.readHexOctet();
+    let addr = "";
 
-    // Address-Value
-    let addr = this.readSwappedNibbleBcdString(len / 2);
+    if ((toa & 0xF0) == PDU_TOA_ALPHANUMERIC) {
+      addr = this.readSeptetsToString(Math.floor(len * 4 / 7), 0,
+          PDU_NL_IDENTIFIER_DEFAULT , PDU_NL_IDENTIFIER_DEFAULT );
+      return addr;
+    }
+    addr = this.readSwappedNibbleBcdString(len / 2);
     if (addr.length <= 0) {
       if (DEBUG) debug("PDU error: no number provided");
       return null;
     }
-    if ((toa >> 4) == (PDU_TOA_INTERNATIONAL >> 4)) {
+    if ((toa & 0xF0) == (PDU_TOA_INTERNATIONAL)) {
       addr = '+' + addr;
     }
 
     return addr;
   },
-  
+
   /**
    * Read Alpha Identifier.
    *

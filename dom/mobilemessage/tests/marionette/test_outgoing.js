@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-MARIONETTE_TIMEOUT = 40000;
+MARIONETTE_TIMEOUT = 60000;
 
 SpecialPowers.setBoolPref("dom.sms.enabled", true);
 SpecialPowers.setBoolPref("dom.sms.strict7BitEncoding", false);
@@ -32,6 +32,7 @@ function checkMessage(message, delivery, body) {
      "message is instanceof " + message.constructor);
 
   ok(message.id, "message.id");
+  ok(message.threadId, "message.threadId");
   is(message.delivery, delivery, "message.delivery");
   is(message.deliveryStatus, "pending", "message.deliveryStatus");
   is(message.sender, SENDER, "message.sender");

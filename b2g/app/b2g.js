@@ -1,4 +1,4 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
+y/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -401,6 +401,21 @@ pref("dom.mozContacts.enabled", true);
 // WebAlarms
 pref("dom.mozAlarms.enabled", true);
 
+// SimplePush
+// serverURL to be assigned by services team
+pref("services.push.serverURL", "");
+pref("services.push.userAgentID", "");
+// exponential back-off start is 5 seconds like in HTTP/1.1
+pref("services.push.retryBaseInterval", 5000);
+// exponential back-off end is 20 minutes
+pref("services.push.maxRetryInterval", 1200000);
+// How long before a DOMRequest errors as timeout
+pref("services.push.requestTimeout", 10000);
+// enable udp wakeup support
+pref("services.push.udp.wakeupEnabled", true);
+// port on which UDP server socket is bound
+pref("services.push.udp.port", 2442);
+
 // NetworkStats
 #ifdef MOZ_B2G_RIL
 pref("dom.mozNetworkStats.enabled", true);
@@ -451,6 +466,10 @@ pref("media.volume.steps", 10);
 //Enable/disable marionette server, set listening port
 pref("marionette.defaultPrefs.enabled", true);
 pref("marionette.defaultPrefs.port", 2828);
+#ifndef MOZ_WIDGET_GONK
+// On desktop builds, we need to force the socket to listen on localhost only
+pref("marionette.force-local", true);
+#endif
 #endif
 
 #ifdef MOZ_UPDATER
@@ -653,10 +672,6 @@ pref("webgl.can-lose-context-in-foreground", false);
 // this fifo to trigger about:memory dumps, among other things.
 pref("memory_info_dumper.watch_fifo.enabled", true);
 pref("memory_info_dumper.watch_fifo.directory", "/data/local");
-
-// <input type='file'> implementation is not complete. We have to disable the
-// type to web content to help them do feature detection.
-pref("dom.disable_input_file", true);
 
 pref("general.useragent.enable_overrides", true);
 

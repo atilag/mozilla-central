@@ -335,6 +335,7 @@ function RILContentHelper() {
     return;
   }
   this.cardState = rilContext.cardState;
+  this.networkSelectionMode = rilContext.networkSelectionMode;
   this.updateICCInfo(rilContext.icc, this.iccInfo);
   this.updateConnectionInfo(rilContext.voice, this.voiceConnectionInfo);
   this.updateConnectionInfo(rilContext.data, this.dataConnectionInfo);
@@ -935,7 +936,7 @@ RILContentHelper.prototype = {
         this._deliverCallback("_telephonyCallbacks",
                               "notifyError",
                               [msg.json.callIndex,
-                               msg.json.error]);
+                               msg.json.errorMsg]);
         break;
       case "RIL:VoicemailNotification":
         this.handleVoicemailNotification(msg.json);

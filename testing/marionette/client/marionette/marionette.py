@@ -13,7 +13,7 @@ from application_cache import ApplicationCache
 from keys import Keys
 from errors import *
 from emulator import Emulator
-from geckoinstance import GeckoInstance
+import geckoinstance
 
 
 class HTMLElement(object):
@@ -62,6 +62,9 @@ class HTMLElement(object):
     def release(self, touch_id, x=None, y=None):
         return self.marionette._send_message('release', 'ok', element=self.id, touchId=touch_id, x=x, y=y)
 
+    def cancel_touch(self, touch_id):
+        return self.marionette._send_message('cancelTouch', 'ok', element=self.id, touchId=touch_id)
+
     @property
     def text(self):
         return self.marionette._send_message('getElementText', 'value', element=self.id)
@@ -108,6 +111,7 @@ class Actions(object):
     def __init__(self, marionette):
         self.action_chain = []
         self.marionette = marionette
+        self.current_id = None
 
     def press(self, element, x=None, y=None):
         element=element.id
@@ -131,8 +135,29 @@ class Actions(object):
         self.action_chain.append(['wait', time])
         return self
 
+    def cancel(self):
+        self.action_chain.append(['cancel'])
+        return self
+
     def perform(self):
-        return self.marionette._send_message('actionChain', 'ok', value=self.action_chain)
+        self.current_id = self.marionette._send_message('actionChain', 'value', chain=self.action_chain, nextId=self.current_id)
+        self.action_chain = []
+        return self
+
+class MultiActions(object):
+    def __init__(self, marionette):
+        self.multi_actions = []
+        self.max_length = 0
+        self.marionette = marionette
+
+    def add(self, action):
+        self.multi_actions.append(action.action_chain)
+        if len(action.action_chain) > self.max_length:
+          self.max_length = len(action.action_chain)
+        return self
+
+    def perform(self):
+        return self.marionette._send_message('multiAction', 'ok', value=self.multi_actions, max_length=self.max_length)
 
 class Marionette(object):
 
@@ -142,13 +167,14 @@ class Marionette(object):
     TIMEOUT_SCRIPT = 'script'
     TIMEOUT_PAGE = 'page load'
 
-    def __init__(self, host='localhost', port=2828, bin=None, profile=None,
-                 emulator=None, sdcard=None, emulatorBinary=None,
-                 emulatorImg=None, emulator_res='480x800', gecko_path=None,
+    def __init__(self, host='localhost', port=2828, app=None, bin=None,
+                 profile=None, emulator=None, sdcard=None, emulatorBinary=None,
+                 emulatorImg=None, emulator_res=None, gecko_path=None,
                  connectToRunningEmulator=False, homedir=None, baseurl=None,
-                 noWindow=False, logcat_dir=None, busybox=None):
+                 noWindow=False, logcat_dir=None, busybox=None, symbols_path=None):
         self.host = host
         self.port = self.local_port = port
+        self.app = app
         self.bin = bin
         self.instance = None
         self.profile = profile
@@ -161,10 +187,24 @@ class Marionette(object):
         self.noWindow = noWindow
         self.logcat_dir = logcat_dir
         self._test_name = None
+        self.symbols_path = symbols_path
 
         if bin:
-            self.instance = GeckoInstance(host=self.host, port=self.port,
-                                          bin=self.bin, profile=self.profile)
+            port = int(self.port)
+            if not Marionette.is_port_available(port, host=self.host):
+                ex_msg = "%s:%d is unavailable." % (self.host, port)
+                raise MarionetteException(message=ex_msg)
+            if app:
+                # select instance class for the given app
+                try:
+                    instance_class = geckoinstance.apps[app]
+                except KeyError:
+                    msg = 'Application "%s" unknown (should be one of %s)'
+                    raise NotImplementedError(msg % (app, geckoinstance.apps.keys()))
+            else:
+                instance_class = geckoinstance.GeckoInstance
+            self.instance = instance_class(host=self.host, port=self.port,
+                                           bin=self.bin, profile=self.profile)
             self.instance.start()
             assert(self.wait_for_port())
 
@@ -202,6 +242,18 @@ class Marionette(object):
             self.instance.close()
         for qemu in self.extra_emulators:
             qemu.emulator.close()
+
+    @staticmethod
+    def is_port_available(port, host=''):
+        port = int(port)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((host, port))
+            return True
+        except socket.error:
+            return False
+        finally:
+            s.close()
 
     @classmethod
     def getMarionetteOrExit(cls, *args, **kwargs):
@@ -320,7 +372,11 @@ class Marionette(object):
                  or status == ErrorCodes.INVALID_XPATH_SELECTOR_RETURN_TYPER:
                 raise InvalidSelectorException(message=message, status=status, stacktrace=stacktrace)
             elif status == ErrorCodes.MOVE_TARGET_OUT_OF_BOUNDS:
-                MoveTargetOutOfBoundsException(message=message, status=status, stacktrace=stacktrace)
+                raise MoveTargetOutOfBoundsException(message=message, status=status, stacktrace=stacktrace)
+            elif status == ErrorCodes.FRAME_SEND_NOT_INITIALIZED_ERROR:
+                raise FrameSendNotInitializedError(message=message, status=status, stacktrace=stacktrace)
+            elif status == ErrorCodes.FRAME_SEND_FAILURE_ERROR:
+                raise FrameSendFailureError(message=message, status=status, stacktrace=stacktrace)
             else:
                 raise MarionetteException(message=message, status=status, stacktrace=stacktrace)
         raise MarionetteException(message=response, status=500)
@@ -328,10 +384,15 @@ class Marionette(object):
     def check_for_crash(self):
         returncode = None
         name = None
+        crashed = False
         if self.emulator:
             if self.emulator.check_for_crash():
                 returncode = self.emulator.proc.returncode
                 name = 'emulator'
+                crashed = True
+
+            if self.symbols_path and self.emulator.check_for_minidumps(self.symbols_path):
+                crashed = True
         elif self.instance:
             # In the future, a check for crashed Firefox processes
             # should be here.
@@ -339,7 +400,7 @@ class Marionette(object):
         if returncode is not None:
             print ('PROCESS-CRASH | %s | abnormal termination with exit code %d' %
                 (name, returncode))
-        return returncode is not None
+        return crashed
 
     def absolute_url(self, relative_url):
         return "%s%s" % (self.baseurl, relative_url)
@@ -348,8 +409,14 @@ class Marionette(object):
         return self._send_message('getStatus', 'value')
 
     def start_session(self, desired_capabilities=None):
-        # We are ignoring desired_capabilities, at least for now.
-        self.session = self._send_message('newSession', 'value')
+        try:
+            # We are ignoring desired_capabilities, at least for now.
+            self.session = self._send_message('newSession', 'value')
+        except:
+            traceback.print_exc()
+            self.check_for_crash()
+            sys.exit()
+
         self.b2g = 'b2g' in self.session
         return self.session
 
@@ -483,7 +550,7 @@ class Marionette(object):
 
         return unwrapped
 
-    def execute_js_script(self, script, script_args=None, async=True, new_sandbox=True, special_powers=False):
+    def execute_js_script(self, script, script_args=None, async=True, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -493,10 +560,11 @@ class Marionette(object):
                                       args=args,
                                       async=async,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers, 
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
-    def execute_script(self, script, script_args=None, new_sandbox=True, special_powers=False):
+    def execute_script(self, script, script_args=None, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -505,10 +573,11 @@ class Marionette(object):
                                       value=script,
                                       args=args,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers,
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
-    def execute_async_script(self, script, script_args=None, new_sandbox=True, special_powers=False):
+    def execute_async_script(self, script, script_args=None, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -517,7 +586,8 @@ class Marionette(object):
                                       value=script,
                                       args=args,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers,
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
     def find_element(self, method, target, id=None):
