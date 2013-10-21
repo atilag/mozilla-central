@@ -165,6 +165,7 @@ ClientLayerManager::EndTransactionInternal(DrawThebesLayerCallback aCallback,
   MOZ_LAYERS_LOG(("  ----- (beginning paint)"));
   Log();
 #endif
+  profiler_tracing("Paint", "Rasterize", TRACING_INTERVAL_START);
 
   NS_ASSERTION(InConstruction(), "Should be in construction phase");
   mPhase = PHASE_DRAWING;
@@ -263,7 +264,7 @@ ClientLayerManager::MakeSnapshotIfRequired()
       mWidget->GetBounds(bounds);
       SurfaceDescriptor inSnapshot, snapshot;
       if (AllocSurfaceDescriptor(bounds.Size(),
-                                 gfxASurface::CONTENT_COLOR_ALPHA,
+                                 GFX_CONTENT_COLOR_ALPHA,
                                  &inSnapshot) &&
           // The compositor will usually reuse |snapshot| and return
           // it through |outSnapshot|, but if it doesn't, it's
@@ -337,6 +338,10 @@ ClientLayerManager::ForwardTransaction()
         // glue code here to find the TextureClient and invoke a callback to
         // let the camera know that the gralloc buffer is not used anymore on
         // the compositor side and that it can reuse it.
+        const ReplyTextureRemoved& rep = reply.get_ReplyTextureRemoved();
+        CompositableClient* compositable
+          = static_cast<CompositableChild*>(rep.compositableChild())->GetCompositableClient();
+        compositable->OnReplyTextureRemoved(rep.textureId());
         break;
       }
 

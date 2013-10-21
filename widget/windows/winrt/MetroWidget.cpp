@@ -31,6 +31,9 @@
 #endif
 #include "UIABridgePrivate.h"
 #include "WinMouseScrollHandler.h"
+#include "InputData.h"
+#include "mozilla/TextEvents.h"
+#include "mozilla/TouchEvents.h"
 
 using namespace Microsoft::WRL;
 using namespace Microsoft::WRL::Wrappers;
@@ -56,7 +59,7 @@ extern PRLogModuleInfo* gWindowsLog;
 
 static uint32_t gInstanceCount = 0;
 const PRUnichar* kMetroSubclassThisProp = L"MetroSubclassThisProp";
-HWND MetroWidget::sICoreHwnd = NULL;
+HWND MetroWidget::sICoreHwnd = nullptr;
 
 namespace mozilla {
 namespace widget {
@@ -141,7 +144,7 @@ namespace {
     // processed.
     Log("  Inputs sent. Waiting for input messages to clear");
     MSG msg;
-    while (WinUtils::PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+    while (WinUtils::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
       if (nsTextStore::ProcessRawKeyMessage(msg)) {
         continue;  // the message is consumed by TSF
       }
@@ -160,8 +163,8 @@ nsRefPtr<mozilla::layers::APZCTreeManager> MetroWidget::sAPZC;
 
 MetroWidget::MetroWidget() :
   mTransparencyMode(eTransparencyOpaque),
-  mWnd(NULL),
-  mMetroWndProc(NULL),
+  mWnd(nullptr),
+  mMetroWndProc(nullptr),
   mTempBasicLayerInUse(false),
   mRootLayerTreeId(),
   nsWindowBase()
@@ -299,7 +302,7 @@ MetroWidget::Destroy()
   mLayerManager = nullptr;
   mView = nullptr;
   mIdleService = nullptr;
-  mWnd = NULL;
+  mWnd = nullptr;
 
   return NS_OK;
 }
@@ -627,12 +630,13 @@ MetroWidget::DeliverNextScrollEvent()
 
 // defined in nsWiondowBase, called from shared module KeyboardLayout.
 bool
-MetroWidget::DispatchKeyboardEvent(nsGUIEvent* aEvent)
+MetroWidget::DispatchKeyboardEvent(WidgetGUIEvent* aEvent)
 {
   MOZ_ASSERT(aEvent);
-  nsKeyEvent* oldKeyEvent = static_cast<nsKeyEvent*>(aEvent);
-  nsKeyEvent* keyEvent =
-    new nsKeyEvent(oldKeyEvent->mFlags.mIsTrusted, oldKeyEvent->message, oldKeyEvent->widget);
+  WidgetKeyboardEvent* oldKeyEvent = aEvent->AsKeyboardEvent();
+  WidgetKeyboardEvent* keyEvent =
+    new WidgetKeyboardEvent(oldKeyEvent->mFlags.mIsTrusted,
+                            oldKeyEvent->message, oldKeyEvent->widget);
   // XXX note this leaves pluginEvent null, which is fine for now.
   keyEvent->AssignKeyEventData(*oldKeyEvent, true);
   mKeyEventQueue.Push(keyEvent);
@@ -651,7 +655,7 @@ public:
     mId(aIdToCancel) {
   }
   virtual void* operator() (void* aObject) {
-    nsKeyEvent* event = static_cast<nsKeyEvent*>(aObject);
+    WidgetKeyboardEvent* event = static_cast<WidgetKeyboardEvent*>(aObject);
     if (event->mUniqueId == mId) {
       event->mFlags.mPropagationStopped = true;
     }
@@ -664,7 +668,8 @@ protected:
 void
 MetroWidget::DeliverNextKeyboardEvent()
 {
-  nsKeyEvent* event = static_cast<nsKeyEvent*>(mKeyEventQueue.PopFront());
+  WidgetKeyboardEvent* event =
+    static_cast<WidgetKeyboardEvent*>(mKeyEventQueue.PopFront());
   if (event->mFlags.mPropagationStopped) {
     // This can happen if a keypress was previously cancelled.
     delete event;
@@ -915,7 +920,7 @@ MetroWidget::RemoveSubclass()
       NS_ASSERTION(mMetroWndProc, "Should have old proc here.");
       SetWindowLongPtr(mWnd, GWLP_WNDPROC,
         reinterpret_cast<LONG_PTR>(mMetroWndProc));
-      mMetroWndProc = NULL;
+      mMetroWndProc = nullptr;
   }
   RemovePropW(mWnd, kMetroSubclassThisProp);
 }
@@ -976,6 +981,60 @@ CompositorParent* MetroWidget::NewCompositorParent(int aSurfaceWidth, int aSurfa
   }
 
   return compositor;
+}
+
+void
+MetroWidget::ApzContentConsumingTouch()
+{
+  LogFunction();
+  if (!MetroWidget::sAPZC) {
+    return;
+  }
+  MetroWidget::sAPZC->ContentReceivedTouch(mRootLayerTreeId, true);
+}
+
+void
+MetroWidget::ApzContentIgnoringTouch()
+{
+  LogFunction();
+  if (!MetroWidget::sAPZC) {
+    return;
+  }
+  MetroWidget::sAPZC->ContentReceivedTouch(mRootLayerTreeId, false);
+}
+
+bool
+MetroWidget::HitTestAPZC(ScreenPoint& pt)
+{
+  if (!MetroWidget::sAPZC) {
+    return false;
+  }
+  return MetroWidget::sAPZC->HitTestAPZC(pt);
+}
+
+nsEventStatus
+MetroWidget::ApzReceiveInputEvent(WidgetInputEvent* aEvent)
+{
+  MOZ_ASSERT(aEvent);
+
+  if (!MetroWidget::sAPZC) {
+    return nsEventStatus_eIgnore;
+  }
+  return MetroWidget::sAPZC->ReceiveInputEvent(*aEvent->AsInputEvent());
+}
+
+nsEventStatus
+MetroWidget::ApzReceiveInputEvent(WidgetInputEvent* aInEvent,
+                                  WidgetInputEvent* aOutEvent)
+{
+  MOZ_ASSERT(aInEvent);
+  MOZ_ASSERT(aOutEvent);
+
+  if (!MetroWidget::sAPZC) {
+    return nsEventStatus_eIgnore;
+  }
+  return MetroWidget::sAPZC->ReceiveInputEvent(*aInEvent->AsInputEvent(),
+                                               aOutEvent);
 }
 
 LayerManager*
@@ -1147,7 +1206,7 @@ void MetroWidget::UserActivity()
 // InitEvent assumes physical coordinates and is used by shared win32 code. Do
 // not hand winrt event coordinates to this routine.
 void
-MetroWidget::InitEvent(nsGUIEvent& event, nsIntPoint* aPoint)
+MetroWidget::InitEvent(WidgetGUIEvent& event, nsIntPoint* aPoint)
 {
   if (!aPoint) {
     event.refPoint.x = event.refPoint.y = 0;
@@ -1159,7 +1218,7 @@ MetroWidget::InitEvent(nsGUIEvent& event, nsIntPoint* aPoint)
 }
 
 bool
-MetroWidget::DispatchWindowEvent(nsGUIEvent* aEvent)
+MetroWidget::DispatchWindowEvent(WidgetGUIEvent* aEvent)
 {
   MOZ_ASSERT(aEvent);
   nsEventStatus status = nsEventStatus_eIgnore;
@@ -1168,9 +1227,9 @@ MetroWidget::DispatchWindowEvent(nsGUIEvent* aEvent)
 }
 
 NS_IMETHODIMP
-MetroWidget::DispatchEvent(nsGUIEvent* event, nsEventStatus & aStatus)
+MetroWidget::DispatchEvent(WidgetGUIEvent* event, nsEventStatus & aStatus)
 {
-  if (NS_IS_INPUT_EVENT(event)) {
+  if (event->IsInputDerivedEvent()) {
     UserActivity();
   }
 
@@ -1243,15 +1302,14 @@ double MetroWidget::GetDefaultScaleInternal()
 LayoutDeviceIntPoint
 MetroWidget::CSSIntPointToLayoutDeviceIntPoint(const CSSIntPoint &aCSSPoint)
 {
-  double scale = GetDefaultScale();
-  LayoutDeviceIntPoint devPx(int32_t(NS_round(scale * aCSSPoint.x)),
-                             int32_t(NS_round(scale * aCSSPoint.y)));
+  CSSToLayoutDeviceScale scale = GetDefaultScale();
+  LayoutDeviceIntPoint devPx(int32_t(NS_round(scale.scale * aCSSPoint.x)),
+                             int32_t(NS_round(scale.scale * aCSSPoint.y)));
   return devPx;
 }
 
 float MetroWidget::GetDPI()
 {
-  LogFunction();
   if (!mView) {
     return 96.0;
   }

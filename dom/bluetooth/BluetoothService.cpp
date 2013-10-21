@@ -34,6 +34,7 @@
 #include "nsISettingsService.h"
 #include "nsISystemMessagesInternal.h"
 #include "nsITimer.h"
+#include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsXPCOM.h"
 
@@ -43,7 +44,9 @@
 
 #if defined(MOZ_B2G_BT)
 # if defined(MOZ_BLUETOOTH_GONK)
-#  include "BluetoothGonkService.h"
+#ifndef MOZ_B2G_BT_BLUEDROID
+#include "BluetoothGonkService.h"
+#endif
 # elif defined(MOZ_BLUETOOTH_DBUS)
 #  include "BluetoothDBusService.h"
 # else
@@ -186,17 +189,17 @@ public:
      * Please see bug 892392 for more information.
      */
     if (!mIsStartup && mEnabled == gBluetoothService->IsEnabledInternal()) {
-      NS_WARNING("Bluetooth has already been enabled/disabled before.");
+      BT_WARNING("Bluetooth has already been enabled/disabled before.");
     } else {
       // Switch on/off bluetooth
       if (mEnabled) {
         if (NS_FAILED(gBluetoothService->StartInternal())) {
-          NS_WARNING("Bluetooth service failed to start!");
+          BT_WARNING("Bluetooth service failed to start!");
           mEnabled = !mEnabled;
         }
       } else {
         if (NS_FAILED(gBluetoothService->StopInternal())) {
-          NS_WARNING("Bluetooth service failed to stop!");
+          BT_WARNING("Bluetooth service failed to stop!");
           mEnabled = !mEnabled;
         }
       }
@@ -211,13 +214,13 @@ public:
     // been toggled.
 #if defined(MOZ_WIDGET_GONK)
     if (property_set(PROP_BLUETOOTH_ENABLED, mEnabled ? "true" : "false") != 0) {
-      NS_WARNING("Failed to set bluetooth enabled property");
+      BT_WARNING("Failed to set bluetooth enabled property");
     }
 #endif
 
     nsCOMPtr<nsIRunnable> ackTask = new BluetoothService::ToggleBtAck(mEnabled);
     if (NS_FAILED(NS_DispatchToMainThread(ackTask))) {
-      NS_WARNING("Failed to dispatch to main thread!");
+      BT_WARNING("Failed to dispatch to main thread!");
     }
 
     return NS_OK;
@@ -238,7 +241,7 @@ public:
     MOZ_ASSERT(NS_IsMainThread());
 
     if (!aResult.isBoolean()) {
-      NS_WARNING("Setting for '" BLUETOOTH_ENABLED_SETTING "' is not a boolean!");
+      BT_WARNING("Setting for '" BLUETOOTH_ENABLED_SETTING "' is not a boolean!");
       return NS_OK;
     }
 
@@ -253,7 +256,7 @@ public:
 
   NS_IMETHOD HandleError(const nsAString& aName)
   {
-    NS_WARNING("Unable to get value for '" BLUETOOTH_ENABLED_SETTING "'");
+    BT_WARNING("Unable to get value for '" BLUETOOTH_ENABLED_SETTING "'");
     return NS_OK;
   }
 };
@@ -303,11 +306,15 @@ BluetoothService::Create()
 #endif
 
 #if defined(MOZ_BLUETOOTH_GONK)
+#ifndef MOZ_B2G_BT_BLUEDROID
   return new BluetoothGonkService();
+#endif
 #elif defined(MOZ_BLUETOOTH_DBUS)
+#ifdef MOZ_B2G_BT_BLUEZ
   return new BluetoothDBusService();
 #endif
-  NS_WARNING("No platform support for bluetooth!");
+#endif
+  BT_WARNING("No platform support for bluetooth!");
   return nullptr;
 }
 
@@ -321,14 +328,14 @@ BluetoothService::Init()
 
   if (NS_FAILED(obs->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID,
                                  false))) {
-    NS_WARNING("Failed to add shutdown observer!");
+    BT_WARNING("Failed to add shutdown observer!");
     return false;
   }
 
   // Only the main process should observe bluetooth settings changes.
   if (IsMainProcess() &&
       NS_FAILED(obs->AddObserver(this, MOZSETTINGS_CHANGED_ID, false))) {
-    NS_WARNING("Failed to add settings change observer!");
+    BT_WARNING("Failed to add settings change observer!");
     return false;
   }
 
@@ -344,7 +351,7 @@ BluetoothService::Cleanup()
   if (obs &&
       (NS_FAILED(obs->RemoveObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) ||
        NS_FAILED(obs->RemoveObserver(this, MOZSETTINGS_CHANGED_ID)))) {
-    NS_WARNING("Can't unregister observers!");
+    BT_WARNING("Can't unregister observers!");
   }
 }
 
@@ -356,7 +363,7 @@ BluetoothService::RegisterBluetoothSignalHandler(
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aHandler);
 
-  BT_LOG("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aNodeName).get());
+  BT_LOGD("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aNodeName).get());
 
   BluetoothSignalObserverList* ol;
   if (!mBluetoothSignalObserverTable.Get(aNodeName, &ol)) {
@@ -375,7 +382,7 @@ BluetoothService::UnregisterBluetoothSignalHandler(
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aHandler);
 
-  BT_LOG("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aNodeName).get());
+  BT_LOGD("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aNodeName).get());
 
   BluetoothSignalObserverList* ol;
   if (mBluetoothSignalObserverTable.Get(aNodeName, &ol)) {
@@ -389,7 +396,7 @@ BluetoothService::UnregisterBluetoothSignalHandler(
     }
   }
   else {
-    NS_WARNING("Node was never registered!");
+    BT_WARNING("Node was never registered!");
   }
 }
 
@@ -434,7 +441,7 @@ BluetoothService::DistributeSignal(const BluetoothSignal& aSignal)
 #if DEBUG
     nsAutoCString msg("No observer registered for path ");
     msg.Append(NS_ConvertUTF16toUTF8(aSignal.path()));
-    NS_WARNING(msg.get());
+    BT_WARNING(msg.get());
 #endif
     return;
   }
@@ -529,7 +536,7 @@ BluetoothService::SetEnabled(bool aEnabled)
    * aEnabled: expected status of bluetooth
    */
   if (mEnabled == aEnabled) {
-    NS_WARNING("Bluetooth has already been enabled/disabled before\
+    BT_WARNING("Bluetooth has already been enabled/disabled before\
                 or the toggling is failed.");
   }
 
@@ -735,7 +742,7 @@ BluetoothService::Get()
 
   // If we're in shutdown, don't create a new instance
   if (gInShutdown) {
-    NS_WARNING("BluetoothService can't be created during shutdown");
+    BT_WARNING("BluetoothService can't be created during shutdown");
     return nullptr;
   }
 
@@ -784,11 +791,11 @@ BluetoothService::Notify(const BluetoothSignal& aData)
   NS_ENSURE_TRUE_VOID(obj);
 
   if (!SetJsObject(cx, aData.value(), obj)) {
-    NS_WARNING("Failed to set properties of system message!");
+    BT_WARNING("Failed to set properties of system message!");
     return;
   }
 
-  BT_LOG("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aData.name()).get());
+  BT_LOGD("[S] %s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(aData.name()).get());
 
   if (aData.name().EqualsLiteral("RequestConfirmation")) {
     MOZ_ASSERT(aData.value().get_ArrayOfBluetoothNamedValue().Length() == 4,
@@ -811,7 +818,7 @@ BluetoothService::Notify(const BluetoothSignal& aData)
     nsCString warningMsg;
     warningMsg.AssignLiteral("Not handling service signal: ");
     warningMsg.Append(NS_ConvertUTF16toUTF8(aData.name()));
-    NS_WARNING(warningMsg.get());
+    BT_WARNING(warningMsg.get());
     return;
   }
 

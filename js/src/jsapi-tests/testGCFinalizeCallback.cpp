@@ -2,14 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdarg.h>
-
-#include "jscntxt.h"
-#include "jsfriendapi.h"
-
 #include "jsapi-tests/tests.h"
-
-#include "vm/ObjectImpl-inl.h"
 
 const unsigned BufferSize = 20;
 static unsigned FinalizeCalls = 0;
@@ -133,7 +126,7 @@ BEGIN_TEST(testGCFinalizeCallback)
     CHECK(JS_IsGlobalObject(global2));
     CHECK(JS_IsGlobalObject(global3));
 
-    JS_SetFinalizeCallback(rt, NULL);
+    JS_SetFinalizeCallback(rt, nullptr);
     return true;
 }
 

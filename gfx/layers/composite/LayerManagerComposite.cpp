@@ -148,7 +148,7 @@ LayerManagerComposite::BeginTransaction()
 }
 
 void
-LayerManagerComposite::BeginTransactionWithTarget(gfxContext *aTarget)
+LayerManagerComposite::BeginTransactionWithDrawTarget(DrawTarget* aTarget)
 {
   mInTransaction = true;
 
@@ -348,19 +348,23 @@ LayerManagerComposite::Render()
   }
 
   // Allow widget to render a custom background.
+  mCompositor->SaveState();
   mCompositor->GetWidget()->DrawWindowUnderlay(this, nsIntRect(actualBounds.x,
                                                                actualBounds.y,
                                                                actualBounds.width,
                                                                actualBounds.height));
+  mCompositor->RestoreState();
 
   // Render our layers.
   RootLayer()->RenderLayer(nsIntPoint(0, 0), clipRect);
 
   // Allow widget to render a custom foreground.
+  mCompositor->SaveState();
   mCompositor->GetWidget()->DrawWindowOverlay(this, nsIntRect(actualBounds.x,
                                                               actualBounds.y,
                                                               actualBounds.width,
                                                               actualBounds.height));
+  mCompositor->RestoreState();
 
   // Debugging
   RenderDebugOverlay(actualBounds);
@@ -722,6 +726,7 @@ LayerComposite::LayerComposite(LayerManagerComposite *aManager)
   , mUseShadowClipRect(false)
   , mShadowTransformSetByAnimation(false)
   , mDestroyed(false)
+  , mLayerComposited(false)
 { }
 
 LayerComposite::~LayerComposite()
@@ -759,7 +764,8 @@ LayerManagerComposite::NotifyShadowTreeTransaction()
 bool
 LayerManagerComposite::CanUseCanvasLayerForSize(const gfxIntSize &aSize)
 {
-  return mCompositor->CanUseCanvasLayerForSize(aSize);
+  return mCompositor->CanUseCanvasLayerForSize(gfx::IntSize(aSize.width,
+                                                            aSize.height));
 }
 
 TextureFactoryIdentifier

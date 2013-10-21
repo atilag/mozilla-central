@@ -76,10 +76,10 @@ LIRGeneratorX64::visitUnbox(MUnbox *unbox)
 {
     MDefinition *box = unbox->getOperand(0);
     LUnboxBase *lir;
-    if (unbox->type() == MIRType_Double)
-        lir = new LUnboxDouble(useRegister(box));
+    if (IsFloatingPointType(unbox->type()))
+        lir = new LUnboxFloatingPoint(useRegisterAtStart(box), unbox->type());
     else
-        lir = new LUnbox(useRegister(box));
+        lir = new LUnbox(useRegisterAtStart(box));
 
     if (unbox->fallible() && !assignSnapshot(lir, unbox->bailoutKind()))
         return false;
@@ -114,7 +114,7 @@ bool
 LIRGeneratorX64::visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins)
 {
     JS_ASSERT(ins->input()->type() == MIRType_Int32);
-    LUInt32ToDouble *lir = new LUInt32ToDouble(useRegisterAtStart(ins->input()));
+    LAsmJSUInt32ToDouble *lir = new LAsmJSUInt32ToDouble(useRegisterAtStart(ins->input()));
     return define(lir, ins);
 }
 
@@ -165,20 +165,6 @@ bool
 LIRGeneratorX64::visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins)
 {
     return define(new LAsmJSLoadFuncPtr(useRegister(ins->index()), temp()), ins);
-}
-
-LGetPropertyCacheT *
-LIRGeneratorX64::newLGetPropertyCacheT(MGetPropertyCache *ins)
-{
-    return new LGetPropertyCacheT(useRegister(ins->object()), LDefinition::BogusTemp());
-}
-
-LGetElementCacheT *
-LIRGeneratorX64::newLGetElementCacheT(MGetElementCache *ins)
-{
-    return new LGetElementCacheT(useRegister(ins->object()),
-                                 useRegister(ins->index()),
-                                 LDefinition::BogusTemp());
 }
 
 bool

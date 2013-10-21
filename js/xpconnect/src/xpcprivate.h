@@ -86,7 +86,6 @@
 #include "mozilla/Util.h"
 
 #include <math.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,7 +127,7 @@
 #include "nsXPIDLString.h"
 #include "nsAutoJSValHolder.h"
 
-#include "nsThreadUtils.h"
+#include "MainThreadUtils.h"
 #include "nsIJSEngineTelemetryStats.h"
 
 #include "nsIConsoleService.h"
@@ -277,6 +276,18 @@ extern const char XPC_XPCONNECT_CONTRACTID[];
 // wrapped global objects is totally broken. But due to a happy coincidence, the
 // JS engine never uses that slot. This still needs fixing though. See bug 760095.
 #define WN_XRAYEXPANDOCHAIN_SLOT 0
+
+// If IS_WN_CLASS for the JSClass of an object is true, the object is a
+// wrappednative wrapper, holding the XPCWrappedNative in its private slot.
+static inline bool IS_WN_CLASS(const js::Class* clazz)
+{
+    return clazz->ext.isWrappedNative;
+}
+
+static inline bool IS_WN_REFLECTOR(JSObject *obj)
+{
+    return IS_WN_CLASS(js::GetObjectClass(obj));
+}
 
 inline void SetWNExpandoChain(JSObject *obj, JSObject *chain)
 {
@@ -654,10 +665,10 @@ public:
     bool OnJSContextNew(JSContext* cx);
 
     virtual bool
-    DescribeCustomObjects(JSObject* aObject, js::Class* aClasp,
+    DescribeCustomObjects(JSObject* aObject, const js::Class* aClasp,
                           char (&aName)[72]) const MOZ_OVERRIDE;
     virtual bool
-    NoteCustomGCThingXPCOMChildren(js::Class* aClasp, JSObject* aObj,
+    NoteCustomGCThingXPCOMChildren(const js::Class* aClasp, JSObject* aObj,
                                    nsCycleCollectionTraversalCallback& aCb) const MOZ_OVERRIDE;
 
     /**
@@ -765,6 +776,7 @@ public:
     void AddContextCallback(xpcContextCallback cb);
     void RemoveContextCallback(xpcContextCallback cb);
 
+    static JSContext* DefaultJSContextCallback(JSRuntime *rt);
     static void ActivityCallback(void *arg, bool active);
     static void CTypesActivityCallback(JSContext *cx,
                                        js::CTypesActivityType type);
@@ -786,7 +798,7 @@ private:
 
     void ReleaseIncrementally(nsTArray<nsISupports *> &array);
 
-    static const char* mStrings[IDX_TOTAL_COUNT];
+    static const char* const mStrings[IDX_TOTAL_COUNT];
     jsid mStrIDs[IDX_TOTAL_COUNT];
     jsval mStrJSVals[IDX_TOTAL_COUNT];
 
@@ -1114,13 +1126,13 @@ private:
 // visibility from more than one .cpp file.
 
 struct XPCWrappedNativeJSClass;
-extern XPCWrappedNativeJSClass XPC_WN_NoHelper_JSClass;
-extern js::Class XPC_WN_NoMods_WithCall_Proto_JSClass;
-extern js::Class XPC_WN_NoMods_NoCall_Proto_JSClass;
-extern js::Class XPC_WN_ModsAllowed_WithCall_Proto_JSClass;
-extern js::Class XPC_WN_ModsAllowed_NoCall_Proto_JSClass;
-extern js::Class XPC_WN_Tearoff_JSClass;
-extern js::Class XPC_WN_NoHelper_Proto_JSClass;
+extern const XPCWrappedNativeJSClass XPC_WN_NoHelper_JSClass;
+extern const js::Class XPC_WN_NoMods_WithCall_Proto_JSClass;
+extern const js::Class XPC_WN_NoMods_NoCall_Proto_JSClass;
+extern const js::Class XPC_WN_ModsAllowed_WithCall_Proto_JSClass;
+extern const js::Class XPC_WN_ModsAllowed_NoCall_Proto_JSClass;
+extern const js::Class XPC_WN_Tearoff_JSClass;
+extern const js::Class XPC_WN_NoHelper_Proto_JSClass;
 
 extern bool
 XPC_WN_CallMethod(JSContext *cx, unsigned argc, jsval *vp);
@@ -1195,7 +1207,7 @@ XPC_WN_JSOp_ThisObject(JSContext *cx, JS::HandleObject obj);
 // Maybe this macro should check for class->enumerate ==
 // XPC_WN_Shared_Proto_Enumerate or something rather than checking for
 // 4 classes?
-static inline bool IS_PROTO_CLASS(js::Class *clazz)
+static inline bool IS_PROTO_CLASS(const js::Class *clazz)
 {
     return clazz == &XPC_WN_NoMods_WithCall_Proto_JSClass ||
            clazz == &XPC_WN_NoMods_NoCall_Proto_JSClass ||
@@ -1826,7 +1838,7 @@ public:
     const XPCNativeScriptableFlags& GetFlags() const {return mFlags;}
     uint32_t                        GetInterfacesBitmap() const
         {return mJSClass.interfacesBitmap;}
-    JSClass*                        GetJSClass()
+    const JSClass*                  GetJSClass()
         {return Jsvalify(&mJSClass.base);}
 
     XPCNativeScriptableShared(uint32_t aFlags, char* aName,
@@ -1875,7 +1887,7 @@ public:
     uint32_t
     GetInterfacesBitmap() const {return mShared->GetInterfacesBitmap();}
 
-    JSClass*
+    const JSClass*
     GetJSClass()          {return mShared->GetJSClass();}
 
     XPCNativeScriptableShared*
@@ -2169,6 +2181,9 @@ private:
 
 void *xpc_GetJSPrivate(JSObject *obj);
 
+void
+TraceXPCGlobal(JSTracer *trc, JSObject *obj);
+
 /***************************************************************************/
 // XPCWrappedNative the wrapper around one instance of a native xpcom object
 // to be used from JavaScript.
@@ -2191,8 +2206,8 @@ public:
      : public nsXPCOMCycleCollectionParticipant
     {
       NS_DECL_CYCLE_COLLECTION_CLASS_BODY(XPCWrappedNative, XPCWrappedNative)
-      NS_IMETHOD Root(void *p) { return NS_OK; }
-      NS_IMETHOD Unroot(void *p) { return NS_OK; }
+      NS_IMETHOD_(void) Root(void *p) { }
+      NS_IMETHOD_(void) Unroot(void *p) { }
       NS_IMPL_GET_XPCOM_CYCLE_COLLECTION_PARTICIPANT(XPCWrappedNative)
     };
     NS_CHECK_FOR_RIGHT_PARTICIPANT_IMPL(XPCWrappedNative);
@@ -2326,12 +2341,6 @@ public:
                  XPCWrappedNativeScope* Scope,
                  XPCNativeInterface* Interface,
                  XPCWrappedNative** wrapper);
-
-    static nsresult
-    Morph(JS::HandleObject existingJSObject,
-          XPCNativeInterface* Interface,
-          nsWrapperCache *cache,
-          XPCWrappedNative** resultWrapper);
 
 public:
     static nsresult
@@ -2705,7 +2714,7 @@ public:
     nsXPCWrappedJS* FindInherited(REFNSIID aIID);
 
     bool IsValid() const {return mJSObj != nullptr;}
-    void SystemIsBeingShutDown(JSRuntime* rt);
+    void SystemIsBeingShutDown();
 
     // This is used by XPCJSRuntime::GCCallback to find wrappers that no
     // longer root their JSObject and are only still alive because they
@@ -2817,7 +2826,7 @@ public:
      * @param pErr [out] relevant error code, if any.
      */
 
-    static bool NativeData2JS(jsval* d,
+    static bool NativeData2JS(JS::MutableHandleValue d,
                               const void* s, const nsXPTType& type,
                               const nsID* iid, nsresult* pErr);
 
@@ -2841,7 +2850,7 @@ public:
      * @param src_is_identity optional performance hint. Set to true only
      *                        if src is the identity pointer.
      */
-    static bool NativeInterface2JSObject(jsval* d,
+    static bool NativeInterface2JSObject(JS::MutableHandleValue d,
                                          nsIXPConnectJSObjectHolder** dest,
                                          xpcObjectHelper& aHelper,
                                          const nsID* iid,
@@ -2869,7 +2878,7 @@ public:
      * @param scope the default scope to put on the new JSObjects' parent chain
      * @param pErr [out] relevant error code, if any.
      */
-    static bool NativeArray2JS(jsval* d, const void** s,
+    static bool NativeArray2JS(JS::MutableHandleValue d, const void** s,
                                const nsXPTType& type, const nsID* iid,
                                uint32_t count, nsresult* pErr);
 
@@ -2883,7 +2892,7 @@ public:
                                     const nsXPTType& type,
                                     nsresult* pErr);
 
-    static bool NativeStringWithSize2JS(jsval* d, const void* s,
+    static bool NativeStringWithSize2JS(JS::MutableHandleValue d, const void* s,
                                         const nsXPTType& type,
                                         uint32_t count,
                                         nsresult* pErr);
@@ -3085,8 +3094,7 @@ class XPCJSContextStack
 {
 public:
     XPCJSContextStack()
-      : mSafeJSContext(NULL)
-      , mOwnSafeJSContext(NULL)
+      : mSafeJSContext(nullptr)
     { }
 
     virtual ~XPCJSContextStack();
@@ -3098,7 +3106,7 @@ public:
 
     JSContext *Peek()
     {
-        return mStack.IsEmpty() ? NULL : mStack[mStack.Length() - 1].cx;
+        return mStack.IsEmpty() ? nullptr : mStack[mStack.Length() - 1].cx;
     }
 
     JSContext *GetSafeJSContext();
@@ -3119,7 +3127,6 @@ private:
 
     AutoInfallibleTArray<XPCJSContextInfo, 16> mStack;
     JSContext*  mSafeJSContext;
-    JSContext*  mOwnSafeJSContext;
 };
 
 /***************************************************************************/
@@ -3504,7 +3511,7 @@ public:
      * @param pJSVal [out] the resulting jsval.
      */
     static bool VariantDataToJS(nsIVariant* variant,
-                                nsresult* pErr, jsval* pJSVal);
+                                nsresult* pErr, JS::MutableHandleValue pJSVal);
 
     bool IsPurple()
     {
@@ -3569,6 +3576,14 @@ xpc_GetSafeJSContext()
 
 namespace xpc {
 
+// JSNatives to expose atob and btoa in various non-DOM XPConnect scopes.
+bool
+Atob(JSContext *cx, unsigned argc, jsval *vp);
+
+bool
+Btoa(JSContext *cx, unsigned argc, jsval *vp);
+
+
 // Helper function that creates a JSFunction that wraps a native function that
 // forwards the call to the original 'callable'. If the 'doclone' argument is
 // set, it also structure clones non-native arguments for extra security.
@@ -3580,6 +3595,19 @@ NewFunctionForwarder(JSContext *cx, JS::HandleId id, JS::HandleObject callable,
 nsresult
 ThrowAndFail(nsresult errNum, JSContext *cx, bool *retval);
 
+struct GlobalProperties {
+    GlobalProperties() { mozilla::PodZero(this); }
+    bool Parse(JSContext *cx, JS::HandleObject obj);
+    bool Define(JSContext *cx, JS::HandleObject obj);
+    bool indexedDB : 1;
+    bool XMLHttpRequest : 1;
+    bool TextDecoder : 1;
+    bool TextEncoder : 1;
+    bool URL : 1;
+    bool atob : 1;
+    bool btoa : 1;
+};
+
 // Infallible.
 already_AddRefed<nsIXPCComponents_utils_Sandbox>
 NewSandboxConstructor();
@@ -3588,23 +3616,40 @@ NewSandboxConstructor();
 bool
 IsSandbox(JSObject *obj);
 
-struct SandboxOptions {
-    struct DOMConstructors {
-        DOMConstructors() { mozilla::PodZero(this); }
-        bool Parse(JSContext* cx, JS::HandleObject obj);
-        bool Define(JSContext* cx, JS::HandleObject obj);
-        bool XMLHttpRequest;
-        bool TextDecoder;
-        bool TextEncoder;
-    };
+class MOZ_STACK_CLASS OptionsBase {
+public:
+    OptionsBase(JSContext *cx = xpc_GetSafeJSContext(),
+                JS::HandleObject options = JS::NullPtr())
+        : mCx(cx)
+        , mObject(cx, options)
+    { }
 
-    SandboxOptions(JSContext *cx)
-        : wantXrays(true)
+    virtual bool Parse() = 0;
+
+protected:
+    bool ParseValue(const char *name, JS::MutableHandleValue prop, bool *found);
+    bool ParseBoolean(const char *name, bool *prop);
+    bool ParseObject(const char *name, JS::MutableHandleObject prop);
+    bool ParseString(const char *name, nsCString &prop);
+
+    JSContext *mCx;
+    JS::RootedObject mObject;
+};
+
+class MOZ_STACK_CLASS SandboxOptions : public OptionsBase {
+public:
+    SandboxOptions(JSContext *cx = xpc_GetSafeJSContext(),
+                   JS::HandleObject options = JS::NullPtr())
+        : OptionsBase(cx, options)
+        , wantXrays(true)
         , wantComponents(true)
         , wantExportHelpers(false)
-        , proto(xpc_GetSafeJSContext())
-        , sameZoneAs(xpc_GetSafeJSContext())
+        , proto(cx)
+        , sameZoneAs(cx)
+        , metadata(cx)
     { }
+
+    virtual bool Parse();
 
     bool wantXrays;
     bool wantComponents;
@@ -3612,11 +3657,15 @@ struct SandboxOptions {
     JS::RootedObject proto;
     nsCString sandboxName;
     JS::RootedObject sameZoneAs;
-    DOMConstructors DOMConstructors;
+    GlobalProperties globalProperties;
+    JS::RootedValue metadata;
+
+protected:
+    bool ParseGlobalProperties();
 };
 
 JSObject *
-CreateGlobalObject(JSContext *cx, JSClass *clasp, nsIPrincipal *principal,
+CreateGlobalObject(JSContext *cx, const JSClass *clasp, nsIPrincipal *principal,
                    JS::CompartmentOptions& aOptions);
 
 // Helper for creating a sandbox object to use for evaluating
@@ -3647,7 +3696,18 @@ EvalInSandbox(JSContext *cx, JS::HandleObject sandbox, const nsAString& source,
               JSVersion jsVersion, bool returnStringOnly,
               JS::MutableHandleValue rval);
 
+// Helper for retrieving metadata stored in a reserved slot. The metadata
+// is set during the sandbox creation using the "metadata" option.
+nsresult
+GetSandboxMetadata(JSContext *cx, JS::HandleObject sandboxArg,
+                   JS::MutableHandleValue rval);
+
+nsresult
+SetSandboxMetadata(JSContext *cx, JS::HandleObject sandboxArg,
+                   JS::HandleValue metadata);
+
 } /* namespace xpc */
+
 
 /***************************************************************************/
 // Inlined utilities.
@@ -3762,14 +3822,49 @@ GetObjectScope(JSObject *obj)
 extern bool gDebugMode;
 extern bool gDesiredDebugMode;
 
-extern JSClass SafeJSContextGlobalClass;
+extern const JSClass SafeJSContextGlobalClass;
 
 JSObject* NewOutObject(JSContext* cx, JSObject* scope);
 bool IsOutObject(JSContext* cx, JSObject* obj);
 
 nsresult HasInstance(JSContext *cx, JS::HandleObject objArg, const nsID *iid, bool *bp);
 
+/**
+ * Define quick stubs on the given object, @a proto.
+ *
+ * @param cx
+ *     A context.  Requires request.
+ * @param proto
+ *     The (newly created) prototype object for a DOM class.  The JS half
+ *     of an XPCWrappedNativeProto.
+ * @param flags
+ *     Property flags for the quick stub properties--should be either
+ *     JSPROP_ENUMERATE or 0.
+ * @param interfaceCount
+ *     The number of interfaces the class implements.
+ * @param interfaceArray
+ *     The interfaces the class implements; interfaceArray and
+ *     interfaceCount are like what nsIClassInfo.getInterfaces returns.
+ */
+bool
+DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, uint32_t flags,
+                     uint32_t interfaceCount, const nsIID **interfaceArray);
+
+nsIPrincipal *GetObjectPrincipal(JSObject *obj);
+
 } // namespace xpc
+
+namespace mozilla {
+namespace dom {
+extern bool
+DefineStaticJSVals(JSContext *cx);
+} // namespace dom
+} // namespace mozilla
+
+NS_EXPORT_(bool)
+xpc_LocalizeRuntime(JSRuntime *rt);
+NS_EXPORT_(void)
+xpc_DelocalizeRuntime(JSRuntime *rt);
 
 /***************************************************************************/
 // Inlines use the above - include last.

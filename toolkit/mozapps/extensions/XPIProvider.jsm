@@ -7,6 +7,7 @@
 const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cr = Components.results;
+const Cu = Components.utils;
 
 this.EXPORTED_SYMBOLS = [];
 
@@ -24,6 +25,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
                                   "resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
                                   "resource://gre/modules/NetUtil.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PermissionsUtils",
+                                  "resource://gre/modules/PermissionsUtils.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this,
                                    "ChromeRegistry",
@@ -56,8 +59,7 @@ const PREF_EM_AUTO_DISABLED_SCOPES    = "extensions.autoDisableScopes";
 const PREF_EM_SHOW_MISMATCH_UI        = "extensions.showMismatchUI";
 const PREF_XPI_ENABLED                = "xpinstall.enabled";
 const PREF_XPI_WHITELIST_REQUIRED     = "xpinstall.whitelist.required";
-const PREF_XPI_WHITELIST_PERMISSIONS  = "xpinstall.whitelist.add";
-const PREF_XPI_BLACKLIST_PERMISSIONS  = "xpinstall.blacklist.add";
+const PREF_XPI_PERMISSIONS_BRANCH     = "xpinstall.";
 const PREF_XPI_UNPACK                 = "extensions.alwaysUnpack";
 const PREF_INSTALL_REQUIREBUILTINCERTS = "extensions.install.requireBuiltInCerts";
 const PREF_INSTALL_DISTRO_ADDONS      = "extensions.installDistroAddons";
@@ -1333,28 +1335,33 @@ function recursiveRemove(aFile) {
 }
 
 /**
- * Returns the timestamp of the most recently modified file in a directory,
+ * Returns the timestamp and leaf file name of the most recently modified
+ * entry in a directory,
  * or simply the file's own timestamp if it is not a directory.
  *
  * @param  aFile
  *         A non-null nsIFile object
- * @return Epoch time, as described above. 0 for an empty directory.
+ * @return [File Name, Epoch time], as described above.
  */
 function recursiveLastModifiedTime(aFile) {
   try {
+    let modTime = aFile.lastModifiedTime;
+    let fileName = aFile.leafName;
     if (aFile.isFile())
-      return aFile.lastModifiedTime;
+      return [fileName, modTime];
 
     if (aFile.isDirectory()) {
       let entries = aFile.directoryEntries.QueryInterface(Ci.nsIDirectoryEnumerator);
-      let entry, time;
-      let maxTime = aFile.lastModifiedTime;
+      let entry;
       while ((entry = entries.nextFile)) {
-        time = recursiveLastModifiedTime(entry);
-        maxTime = Math.max(time, maxTime);
+        let [subName, subTime] = recursiveLastModifiedTime(entry);
+        if (subTime > modTime) {
+          modTime = subTime;
+          fileName = subName;
+        }
       }
       entries.close();
-      return maxTime;
+      return [fileName, modTime];
     }
   }
   catch (e) {
@@ -1362,7 +1369,7 @@ function recursiveLastModifiedTime(aFile) {
   }
 
   // If the file is something else, just ignore it.
-  return 0;
+  return ["", 0];
 }
 
 /**
@@ -1541,10 +1548,22 @@ var XPIProvider = {
   enabledAddons: null,
   // An array of add-on IDs of add-ons that were inactive during startup
   inactiveAddonIDs: [],
-  // Count of unpacked add-ons
-  unpackedAddons: 0,
   // Keep track of startup phases for telemetry
   runPhase: XPI_STARTING,
+  // Keep track of the newest file in each add-on, in case we want to
+  // report it to telemetry.
+  _mostRecentlyModifiedFile: {},
+  // Per-addon telemetry information
+  _telemetryDetails: {},
+
+  /*
+   * Set a value in the telemetry hash for a given ID
+   */
+  setTelemetry: function XPI_setTelemetry(aId, aName, aValue) {
+    if (!this._telemetryDetails[aId])
+      this._telemetryDetails[aId] = {};
+    this._telemetryDetails[aId][aName] = aValue;
+  },
 
   /**
    * Adds or updates a URI mapping for an Addon.id.
@@ -1685,6 +1704,13 @@ var XPIProvider = {
     this.installs = [];
     this.installLocations = [];
     this.installLocationsByName = {};
+    // Hook for tests to detect when saving database at shutdown time fails
+    this._shutdownError = null;
+    // Clear this at startup for xpcshell test restarts
+    this._telemetryDetails = {};
+    // Register our details structure with AddonManager
+    AddonManagerPrivate.setTelemetryDetails("XPI", this._telemetryDetails);
+
 
     AddonManagerPrivate.recordTimestamp("XPI_startup_begin");
 
@@ -1873,6 +1899,9 @@ var XPIProvider = {
 
   /**
    * Shuts down the database and releases all references.
+   * Return: Promise{integer} resolves / rejects with the result of
+   *                          flushing the XPI Database if it was loaded,
+   *                          0 otherwise.
    */
   shutdown: function XPI_shutdown() {
     LOG("shutdown");
@@ -1903,10 +1932,19 @@ var XPIProvider = {
     delete this._uriMappings;
 
     if (gLazyObjectsLoaded) {
-      XPIDatabase.shutdown(function shutdownCallback(saveError) {
-        LOG("Notifying XPI shutdown observers");
-        Services.obs.notifyObservers(null, "xpi-provider-shutdown", saveError);
-      });
+      let done = XPIDatabase.shutdown();
+      done.then(
+        ret => {
+          LOG("Notifying XPI shutdown observers");
+          Services.obs.notifyObservers(null, "xpi-provider-shutdown", null);
+        },
+        err => {
+          LOG("Notifying XPI shutdown observers");
+          this._shutdownError = err;
+          Services.obs.notifyObservers(null, "xpi-provider-shutdown", err);
+        }
+      );
+      return done;
     }
     else {
       LOG("Notifying XPI shutdown observers");
@@ -2017,18 +2055,22 @@ var XPIProvider = {
     let addonStates = {};
     aLocation.addonLocations.forEach(function(file) {
       let id = aLocation.getIDForLocation(file);
+      let unpacked = 0;
+      let [modFile, modTime] = recursiveLastModifiedTime(file);
       addonStates[id] = {
         descriptor: file.persistentDescriptor,
-        mtime: recursiveLastModifiedTime(file)
+        mtime: modTime
       };
       try {
         // get the install.rdf update time, if any
         file.append(FILE_INSTALL_MANIFEST);
         let rdfTime = file.lastModifiedTime;
         addonStates[id].rdfTime = rdfTime;
-        this.unpackedAddons += 1;
+        unpacked = 1;
       }
       catch (e) { }
+      this._mostRecentlyModifiedFile[id] = modFile;
+      this.setTelemetry(id, "unpacked", unpacked);
     }, this);
 
     return addonStates;
@@ -2045,7 +2087,6 @@ var XPIProvider = {
    */
   getInstallLocationStates: function XPI_getInstallLocationStates() {
     let states = [];
-    this.unpackedAddons = 0;
     this.installLocations.forEach(function(aLocation) {
       let addons = aLocation.addonLocations;
       if (addons.length == 0)
@@ -2990,11 +3031,6 @@ var XPIProvider = {
     let changed = false;
     let knownLocations = XPIDatabase.getInstallLocations();
 
-    // Gather stats for addon telemetry
-    let modifiedUnpacked = 0;
-    let modifiedExManifest = 0;
-    let modifiedXPI = 0;
-
     // The install locations are iterated in reverse order of priority so when
     // there are multiple add-ons installed with the same ID the one that
     // should be visible is the first one encountered.
@@ -3029,15 +3065,22 @@ var XPIProvider = {
             if (aOldAddon.visible && !aOldAddon.active)
               XPIProvider.inactiveAddonIDs.push(aOldAddon.id);
 
-            // Check if the add-on is unpacked, and has had other files changed
-            // on disk without the install.rdf manifest being changed
-            if ((addonState.rdfTime) && (aOldAddon.updateDate != addonState.mtime)) {
-              modifiedUnpacked += 1;
-              if (aOldAddon.updateDate >= addonState.rdfTime)
-                modifiedExManifest += 1;
-            }
-            else if (aOldAddon.updateDate != addonState.mtime) {
-              modifiedXPI += 1;
+            // Check if the add-on has been changed outside the XPI provider
+            if (aOldAddon.updateDate != addonState.mtime) {
+              // Is the add-on unpacked?
+              if (addonState.rdfTime) {
+                // Was the addon manifest "install.rdf" modified, or some other file?
+                if (addonState.rdfTime > aOldAddon.updateDate) {
+                  this.setTelemetry(aOldAddon.id, "modifiedInstallRDF", 1);
+                }
+                else {
+                  this.setTelemetry(aOldAddon.id, "modifiedFile",
+                                    this._mostRecentlyModifiedFile[aOldAddon.id]);
+                }
+              }
+              else {
+                this.setTelemetry(aOldAddon.id, "modifiedXPI", 1);
+              }
             }
 
             // The add-on has changed if the modification time has changed, or
@@ -3091,12 +3134,6 @@ var XPIProvider = {
       }, this);
     }
 
-    // Tell Telemetry what we found
-    AddonManagerPrivate.recordSimpleMeasure("modifiedUnpacked", modifiedUnpacked);
-    if (modifiedUnpacked > 0)
-      AddonManagerPrivate.recordSimpleMeasure("modifiedExceptInstallRDF", modifiedExManifest);
-    AddonManagerPrivate.recordSimpleMeasure("modifiedXPI", modifiedXPI);
-
     // Cache the new install location states
     let cache = JSON.stringify(this.getInstallLocationStates());
     Services.prefs.setCharPref(PREF_INSTALL_CACHE, cache);
@@ -3113,26 +3150,8 @@ var XPIProvider = {
    * manager for the user to change later.
    */
   importPermissions: function XPI_importPermissions() {
-    function importList(aPrefBranch, aAction) {
-      let list = Services.prefs.getChildList(aPrefBranch, {});
-      list.forEach(function(aPref) {
-        let hosts = Prefs.getCharPref(aPref, "");
-        if (!hosts)
-          return;
-
-        hosts.split(",").forEach(function(aHost) {
-          Services.perms.add(NetUtil.newURI("http://" + aHost), XPI_PERMISSION,
-                             aAction);
-        });
-
-        Services.prefs.setCharPref(aPref, "");
-      });
-    }
-
-    importList(PREF_XPI_WHITELIST_PERMISSIONS,
-               Ci.nsIPermissionManager.ALLOW_ACTION);
-    importList(PREF_XPI_BLACKLIST_PERMISSIONS,
-               Ci.nsIPermissionManager.DENY_ACTION);
+    PermissionsUtils.importFromPrefs(PREF_XPI_PERMISSIONS_BRANCH,
+                                     XPI_PERMISSION);
   },
 
   /**
@@ -3190,6 +3209,9 @@ var XPIProvider = {
     // active state of add-ons but didn't commit them properly (normally due
     // to the application crashing)
     let hasPendingChanges = Prefs.getBoolPref(PREF_PENDING_OPERATIONS);
+    if (hasPendingChanges) {
+      updateReasons.push("hasPendingChanges");
+    }
 
     // If the schema appears to have changed then we should update the database
     if (DB_SCHEMA != Prefs.getIntPref(PREF_DB_SCHEMA, 0)) {
@@ -3249,9 +3271,6 @@ var XPIProvider = {
       let extensionListChanged = false;
       // If the database needs to be updated then open it and then update it
       // from the filesystem
-      if (hasPendingChanges) {
-        updateReasons.push("hasPendingChanges");
-      }
       if (updateReasons.length > 0) {
         AddonManagerPrivate.recordSimpleMeasure("XPIDB_startup_load_reasons", updateReasons);
         XPIDatabase.syncLoadDB(false);
@@ -3265,7 +3284,6 @@ var XPIProvider = {
           ERROR("Failed to process extension changes at startup", e);
         }
       }
-      AddonManagerPrivate.recordSimpleMeasure("installedUnpacked", this.unpackedAddons);
 
       if (aAppChanged) {
         // When upgrading the app and using a custom skin make sure it is still
@@ -3888,15 +3906,17 @@ var XPIProvider = {
                     createInstance(Ci.nsIPrincipal);
 
     if (!aFile.exists()) {
-      this.bootstrapScopes[aId] = new Components.utils.Sandbox(principal,
-                                                               {sandboxName: aFile.path});
+      this.bootstrapScopes[aId] =
+        new Cu.Sandbox(principal, {sandboxName: aFile.path,
+                                   wantGlobalProperties: ["indexedDB"]});
       ERROR("Attempted to load bootstrap scope from missing directory " + aFile.path);
       return;
     }
 
     let uri = getURIForResourceInFile(aFile, "bootstrap.js").spec;
-    this.bootstrapScopes[aId] = new Components.utils.Sandbox(principal,
-                                                             {sandboxName: uri});
+    this.bootstrapScopes[aId] =
+      new Cu.Sandbox(principal, {sandboxName: uri,
+                                 wantGlobalProperties: ["indexedDB"]});
 
     let loader = Cc["@mozilla.org/moz/jssubscript-loader;1"].
                  createInstance(Ci.mozIJSSubScriptLoader);
@@ -3973,6 +3993,7 @@ var XPIProvider = {
     if (Services.appinfo.inSafeMode)
       return;
 
+    let timeStart = new Date();
     if (aMethod == "startup") {
       LOG("Registering manifest for " + aFile.path);
       Components.manager.addBootstrappedManifestLocation(aFile);
@@ -4019,6 +4040,7 @@ var XPIProvider = {
         LOG("Removing manifest for " + aFile.path);
         Components.manager.removeBootstrappedManifestLocation(aFile);
       }
+      this.setTelemetry(aId, aMethod + "_MS", new Date() - timeStart);
     }
   },
 
@@ -5331,7 +5353,8 @@ AddonInstall.prototype = {
         // Update the metadata in the database
         this.addon._sourceBundle = file;
         this.addon._installLocation = this.installLocation;
-        this.addon.updateDate = recursiveLastModifiedTime(file); // XXX sync recursive scan
+        let [mFile, mTime] = recursiveLastModifiedTime(file);
+        this.addon.updateDate = mTime;
         this.addon.visible = true;
         if (isUpgrade) {
           this.addon =  XPIDatabase.updateAddonMetadata(this.existingAddon, this.addon,

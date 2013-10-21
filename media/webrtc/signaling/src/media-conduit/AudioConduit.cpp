@@ -145,19 +145,10 @@ MediaConduitErrorCode WebrtcAudioConduit::Init(WebrtcAudioConduit *other)
       // get the JVM
       JavaVM *jvm = jsjni_GetVM();
 
-      JNIEnv* env;
-      if (jvm->GetEnv((void**)&env, JNI_VERSION_1_4) != JNI_OK) {
-        CSFLogError(logTag,  "%s: could not get Java environment", __FUNCTION__);
-        return kMediaConduitSessionNotInited;
-      }
-      jvm->AttachCurrentThread(&env, NULL);
-
       if (webrtc::VoiceEngine::SetAndroidObjects(jvm, (void*)context) != 0) {
         CSFLogError(logTag, "%s Unable to set Android objects", __FUNCTION__);
         return kMediaConduitSessionNotInited;
       }
-
-      env->DeleteGlobalRef(context);
 #endif
 
     //Per WebRTC APIs below function calls return NULL on failure
@@ -319,6 +310,7 @@ WebrtcAudioConduit::ConfigureSendMediaCodec(const AudioCodecConfig* codecConfig)
     return kMediaConduitUnknownError;
   }
 
+#ifdef MOZILLA_INTERNAL_API
   // TEMPORARY - see bug 694814 comment 2
   nsresult rv;
   nsCOMPtr<nsIPrefService> prefs = do_GetService("@mozilla.org/preferences-service;1", &rv);
@@ -340,6 +332,7 @@ WebrtcAudioConduit::ConfigureSendMediaCodec(const AudioCodecConfig* codecConfig)
       branch->GetIntPref("media.peerconnection.capture_delay", &mCaptureDelay);
     }
   }
+#endif
 
   if (0 != (error = mPtrVoEProcessing->SetEcStatus(mEchoOn, mEchoCancel))) {
     CSFLogError(logTag,"%s Error setting EVStatus: %d ",__FUNCTION__, error);

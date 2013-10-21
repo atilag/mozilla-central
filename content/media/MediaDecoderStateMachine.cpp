@@ -558,9 +558,9 @@ void MediaDecoderStateMachine::SendStreamAudio(AudioData* aAudio,
 
   // This logic has to mimic AudioLoop closely to make sure we write
   // the exact same silences
-  CheckedInt64 audioWrittenOffset = UsecsToFrames(mInfo.mAudioRate,
+  CheckedInt64 audioWrittenOffset = UsecsToFrames(mInfo.mAudio.mRate,
       aStream->mInitialTime + mStartTime) + aStream->mAudioFramesWritten;
-  CheckedInt64 frameOffset = UsecsToFrames(mInfo.mAudioRate, aAudio->mTime);
+  CheckedInt64 frameOffset = UsecsToFrames(mInfo.mAudio.mRate, aAudio->mTime);
   if (!audioWrittenOffset.isValid() || !frameOffset.isValid())
     return;
   if (audioWrittenOffset.value() < frameOffset.value()) {
@@ -641,18 +641,18 @@ void MediaDecoderStateMachine::SendStreamData()
   StreamTime endPosition = 0;
 
   if (!stream->mStreamInitialized) {
-    if (mInfo.mHasAudio) {
+    if (mInfo.HasAudio()) {
       AudioSegment* audio = new AudioSegment();
-      mediaStream->AddTrack(TRACK_AUDIO, mInfo.mAudioRate, 0, audio);
+      mediaStream->AddTrack(TRACK_AUDIO, mInfo.mAudio.mRate, 0, audio);
     }
-    if (mInfo.mHasVideo) {
+    if (mInfo.HasVideo()) {
       VideoSegment* video = new VideoSegment();
       mediaStream->AddTrack(TRACK_VIDEO, RATE_VIDEO, 0, video);
     }
     stream->mStreamInitialized = true;
   }
 
-  if (mInfo.mHasAudio) {
+  if (mInfo.HasAudio()) {
     nsAutoTArray<AudioData*,10> audio;
     // It's OK to hold references to the AudioData because while audio
     // is captured, only the decoder thread pops from the queue (see below).
@@ -670,10 +670,10 @@ void MediaDecoderStateMachine::SendStreamData()
     }
     minLastAudioPacketTime = std::min(minLastAudioPacketTime, stream->mLastAudioPacketTime);
     endPosition = std::max(endPosition,
-        TicksToTimeRoundDown(mInfo.mAudioRate, stream->mAudioFramesWritten));
+        TicksToTimeRoundDown(mInfo.mAudio.mRate, stream->mAudioFramesWritten));
   }
 
-  if (mInfo.mHasVideo) {
+  if (mInfo.HasVideo()) {
     nsAutoTArray<VideoData*,10> video;
     // It's OK to hold references to the VideoData only the decoder thread
     // pops from the queue.
@@ -723,8 +723,8 @@ void MediaDecoderStateMachine::SendStreamData()
   }
 
   bool finished =
-      (!mInfo.mHasAudio || mReader->AudioQueue().IsFinished()) &&
-      (!mInfo.mHasVideo || mReader->VideoQueue().IsFinished());
+      (!mInfo.HasAudio() || mReader->AudioQueue().IsFinished()) &&
+      (!mInfo.HasVideo() || mReader->VideoQueue().IsFinished());
   if (finished && !stream->mHaveSentFinish) {
     stream->mHaveSentFinish = true;
     stream->mStream->Finish();
@@ -912,6 +912,10 @@ void MediaDecoderStateMachine::DecodeLoop()
         TimeStamp start = TimeStamp::Now();
         videoPlaying = mReader->DecodeVideoFrame(skipToNextKeyframe, currentTime);
         decodeTime = TimeStamp::Now() - start;
+        if (!videoPlaying) {
+          // Playback ended for this stream, close the sample queue.
+          mReader->VideoQueue().Finish();
+        }
       }
       if (THRESHOLD_FACTOR * DurationToUsecs(decodeTime) > lowAudioThreshold &&
           !HasLowUndecodedData())
@@ -935,6 +939,10 @@ void MediaDecoderStateMachine::DecodeLoop()
     if (!mDidThrottleAudioDecoding) {
       ReentrantMonitorAutoExit exitMon(mDecoder->GetReentrantMonitor());
       audioPlaying = mReader->DecodeAudioData();
+      if (!audioPlaying) {
+        // Playback ended for this stream, close the sample queue.
+        mReader->AudioQueue().Finish();
+      }
     }
 
     SendStreamData();
@@ -1037,8 +1045,8 @@ void MediaDecoderStateMachine::AudioLoop()
     mAudioCompleted = false;
     audioStartTime = mAudioStartTime;
     NS_ASSERTION(audioStartTime != -1, "Should have audio start time by now");
-    channels = mInfo.mAudioChannels;
-    rate = mInfo.mAudioRate;
+    channels = mInfo.mAudio.mChannels;
+    rate = mInfo.mAudio.mRate;
 
     audioChannelType = mDecoder->GetAudioChannelType();
     volume = mVolume;
@@ -1051,7 +1059,7 @@ void MediaDecoderStateMachine::AudioLoop()
     // circumstances, so we take care to drop the decoder monitor while
     // initializing.
     nsAutoPtr<AudioStream> audioStream(AudioStream::AllocateStream());
-    audioStream->Init(channels, rate, audioChannelType);
+    audioStream->Init(channels, rate, audioChannelType, AudioStream::HighLatency);
     audioStream->SetVolume(volume);
     if (audioStream->SetPreservesPitch(preservesPitch) != NS_OK) {
       NS_WARNING("Setting the pitch preservation failed at AudioLoop start.");
@@ -1890,7 +1898,7 @@ nsresult MediaDecoderStateMachine::DecodeMetadata()
 
   LOG(PR_LOG_DEBUG, ("%p Decoding Media Headers", mDecoder.get()));
   nsresult res;
-  VideoInfo info;
+  MediaInfo info;
   MetadataTags* tags;
   {
     ReentrantMonitorAutoExit exitMon(mDecoder->GetReentrantMonitor());
@@ -1904,7 +1912,7 @@ nsresult MediaDecoderStateMachine::DecodeMetadata()
 
   mInfo = info;
 
-  if (NS_FAILED(res) || (!info.mHasVideo && !info.mHasAudio)) {
+  if (NS_FAILED(res) || (!info.HasValidMedia())) {
     // Dispatch the event to call DecodeError synchronously. This ensures
     // we're in shutdown state by the time we exit the decode thread.
     // If we just moved to shutdown state here on the decode thread, we may
@@ -1949,18 +1957,18 @@ nsresult MediaDecoderStateMachine::DecodeMetadata()
   // if there is audio, let the MozAudioAvailable event manager know about
   // the metadata.
   if (HasAudio()) {
-    mEventManager.Init(mInfo.mAudioChannels, mInfo.mAudioRate);
+    mEventManager.Init(mInfo.mAudio.mChannels, mInfo.mAudio.mRate);
     // Set the buffer length at the decoder level to be able, to be able
     // to retrive the value via media element method. The RequestFrameBufferLength
     // will call the MediaDecoderStateMachine::SetFrameBufferLength().
-    uint32_t frameBufferLength = mInfo.mAudioChannels * FRAMEBUFFER_LENGTH_PER_CHANNEL;
+    uint32_t frameBufferLength = mInfo.mAudio.mChannels * FRAMEBUFFER_LENGTH_PER_CHANNEL;
     mDecoder->RequestFrameBufferLength(frameBufferLength);
   }
 
   nsCOMPtr<nsIRunnable> metadataLoadedEvent =
     new AudioMetadataEventRunner(mDecoder,
-                                 mInfo.mAudioChannels,
-                                 mInfo.mAudioRate,
+                                 mInfo.mAudio.mChannels,
+                                 mInfo.mAudio.mRate,
                                  HasAudio(),
                                  HasVideo(),
                                  tags);

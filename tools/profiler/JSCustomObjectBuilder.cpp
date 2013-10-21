@@ -7,7 +7,7 @@
 
 #include "mozilla/Util.h" // for ArrayLength
 #include "nsDataHashtable.h"
-#include "nsStringGlue.h"
+#include "nsString.h"
 #include "nsTArray.h"
 #include "nsUTF8Utils.h"
 
@@ -155,6 +155,16 @@ struct SendToStreamImpl<char *>
 };
 
 template <>
+struct SendToStreamImpl<double>
+{
+  static void run(std::ostream& stream, double p) {
+    // 13 for ms, 16 of microseconds, plus an extra 2
+    stream.precision(18);
+    stream << p;
+  }
+};
+
+template <>
 struct SendToStreamImpl<JSCustomObject*>
 {
   static void run(std::ostream& stream, JSCustomObject* p) {
@@ -229,10 +239,6 @@ PLDHashOperator HashTableFree(const nsACString& aKey, PropertyValue* aValue, voi
 JSCustomObject::~JSCustomObject()
 {
   mProperties.EnumerateRead(HashTableFree, nullptr);
-}
-
-JSAObjectBuilder::~JSAObjectBuilder()
-{
 }
 
 JSCustomObjectBuilder::JSCustomObjectBuilder()

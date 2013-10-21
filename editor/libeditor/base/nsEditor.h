@@ -63,7 +63,6 @@ class nsISelection;
 class nsISupports;
 class nsITransaction;
 class nsIWidget;
-class nsKeyEvent;
 class nsRange;
 class nsString;
 class nsTransactionManager;
@@ -404,8 +403,6 @@ protected:
    * Return true if spellchecking should be enabled for this editor.
    */
   bool GetDesiredSpellCheckState();
-
-  nsKeyEvent* GetNativeKeyEvent(nsIDOMKeyEvent* aDOMKeyEvent);
 
   bool CanEnableSpellCheck()
   {

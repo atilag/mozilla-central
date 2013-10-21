@@ -23,10 +23,12 @@
 #include "Relation.h"
 #include "RootAccessible.h"
 #include "States.h"
+#include "nsISimpleEnumerator.h"
 
 #include "mozilla/Util.h"
 #include "nsXPCOMStrings.h"
 #include "nsComponentManagerUtils.h"
+#include "nsIPersistentProperties2.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -880,23 +882,23 @@ refRelationSetCB(AtkObject *aAtkObj)
     return relation_set;
 
   // Keep in sync with AtkRelationType enum.
-  static const uint32_t relationTypes[] = {
-    nsIAccessibleRelation::RELATION_CONTROLLED_BY,
-    nsIAccessibleRelation::RELATION_CONTROLLER_FOR,
-    nsIAccessibleRelation::RELATION_LABEL_FOR,
-    nsIAccessibleRelation::RELATION_LABELLED_BY,
-    nsIAccessibleRelation::RELATION_MEMBER_OF,
-    nsIAccessibleRelation::RELATION_NODE_CHILD_OF,
-    nsIAccessibleRelation::RELATION_FLOWS_TO,
-    nsIAccessibleRelation::RELATION_FLOWS_FROM,
-    nsIAccessibleRelation::RELATION_SUBWINDOW_OF,
-    nsIAccessibleRelation::RELATION_EMBEDS,
-    nsIAccessibleRelation::RELATION_EMBEDDED_BY,
-    nsIAccessibleRelation::RELATION_POPUP_FOR,
-    nsIAccessibleRelation::RELATION_PARENT_WINDOW_OF,
-    nsIAccessibleRelation::RELATION_DESCRIBED_BY,
-    nsIAccessibleRelation::RELATION_DESCRIPTION_FOR,
-    nsIAccessibleRelation::RELATION_NODE_PARENT_OF
+  static const RelationType relationTypes[] = {
+    RelationType::CONTROLLED_BY,
+    RelationType::CONTROLLER_FOR,
+    RelationType::LABEL_FOR,
+    RelationType::LABELLED_BY,
+    RelationType::MEMBER_OF,
+    RelationType::NODE_CHILD_OF,
+    RelationType::FLOWS_TO,
+    RelationType::FLOWS_FROM,
+    RelationType::SUBWINDOW_OF,
+    RelationType::EMBEDS,
+    RelationType::EMBEDDED_BY,
+    RelationType::POPUP_FOR,
+    RelationType::PARENT_WINDOW_OF,
+    RelationType::DESCRIBED_BY,
+    RelationType::DESCRIPTION_FOR,
+    RelationType::NODE_PARENT_OF
   };
 
   for (uint32_t i = 0; i < ArrayLength(relationTypes); i++) {

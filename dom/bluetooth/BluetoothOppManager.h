@@ -56,7 +56,6 @@ public:
   void SendPutRequest(uint8_t* aFileBody, int aFileBodyLength);
   void SendPutFinalRequest();
   void SendDisconnectRequest();
-  void SendAbortRequest();
 
   void ExtractPacketHeaders(const ObexHeaderSet& aHeader);
   bool ExtractBlobHeaders();
@@ -77,6 +76,11 @@ public:
   virtual void OnUpdateSdpRecords(const nsAString& aDeviceAddress) MOZ_OVERRIDE;
   virtual void GetAddress(nsAString& aDeviceAddress) MOZ_OVERRIDE;
   virtual bool IsConnected() MOZ_OVERRIDE;
+
+  virtual void GetName(nsACString& aName)
+  {
+    aName.AssignLiteral("OPP");
+  }
 
   /*
    * If an application wants to send a file, first, it needs to
@@ -215,7 +219,7 @@ private:
   nsCOMPtr<nsIInputStream> mInputStream;
   nsCOMPtr<nsIVolumeMountLock> mMountLock;
   nsRefPtr<BluetoothReplyRunnable> mRunnable;
-  BluetoothProfileController* mController;
+  nsRefPtr<BluetoothProfileController> mController;
   nsRefPtr<DeviceStorageFile> mDsFile;
 
   // If a connection has been established, mSocket will be the socket

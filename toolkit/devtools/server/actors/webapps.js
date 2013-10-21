@@ -144,7 +144,7 @@ WebappsActor.prototype = {
     this.conn = null;
   },
 
-  _registerApp: function wa_actorRegisterApp(aApp, aId, aDir) {
+  _registerApp: function wa_actorRegisterApp(aDeferred, aApp, aId, aDir) {
     debug("registerApp");
     let reg = DOMApplicationRegistry;
     let self = this;
@@ -176,25 +176,27 @@ WebappsActor.prototype = {
         // Needed to evict manifest cache on content side
         // (has to be dispatched first, otherwise other messages like
         // Install:Return:OK are going to use old manifest version)
-        reg.broadcastMessage("Webapps:PackageEvent",
-                             { type: "installed",
-                               manifestURL: aApp.manifestURL,
-                               app: aApp,
-                               manifest: manifest
-                             });
-
+        reg.broadcastMessage("Webapps:UpdateState", {
+          app: aApp,
+          manifest: manifest,
+          manifestURL: aApp.manifestURL
+        });
+        reg.broadcastMessage("Webapps:FireEvent", {
+          eventType: ["downloadsuccess", "downloadapplied"],
+          manifestURL: aApp.manifestURL
+        });
         reg.broadcastMessage("Webapps:AddApp", { id: aId, app: aApp });
-        reg.broadcastMessage("Webapps:Install:Return:OK",
-                             { app: aApp,
-                               oid: "foo",
-                               requestID: "bar"
-                             });
+        reg.broadcastMessage("Webapps:Install:Return:OK", {
+          app: aApp,
+          oid: "foo",
+          requestID: "bar"
+        });
+
+        Services.obs.notifyObservers(null, "webapps-installed",
+          JSON.stringify({ manifestURL: aApp.manifestURL }));
 
         delete aApp.manifest;
-        self.conn.send({ from: self.actorID,
-                         type: "webappsEvent",
-                         appId: aId
-                       });
+        aDeferred.resolve({ appId: aId, path: aDir.path });
 
         // We can't have appcache for packaged apps.
         if (!aApp.origin.startsWith("app://")) {
@@ -207,15 +209,13 @@ WebappsActor.prototype = {
     });
   },
 
-  _sendError: function wa_actorSendError(aMsg, aId) {
+  _sendError: function wa_actorSendError(aDeferred, aMsg, aId) {
     debug("Sending error: " + aMsg);
-    this.conn.send(
-      { from: this.actorID,
-        type: "webappsEvent",
-        appId: aId,
-        error: "installationFailed",
-        message: aMsg
-      });
+    aDeferred.resolve({
+      error: "installationFailed",
+      message: aMsg,
+      appId: aId
+    });
   },
 
   _getAppType: function wa_actorGetAppType(aType) {
@@ -258,6 +258,7 @@ WebappsActor.prototype = {
                                                    aManifest, aMetadata) {
     debug("installHostedApp");
     let self = this;
+    let deferred = promise.defer();
 
     function readManifest() {
       if (aManifest) {
@@ -277,14 +278,7 @@ WebappsActor.prototype = {
       }
     }
     function checkSideloading(aManifest) {
-      let appType = self._getAppType(aManifest.type);
-
-      // In production builds, don't allow installation of certified apps.
-      if (!DOMApplicationRegistry.allowSideloadingCertified &&
-          appType == Ci.nsIPrincipal.APP_STATUS_CERTIFIED) {
-        throw new Error("Installing certified apps is not allowed.");
-      }
-      return appType;
+      return self._getAppType(aManifest.type);
     }
     function writeManifest(aAppType) {
       // Move manifest.webapp to the destination directory.
@@ -330,8 +324,8 @@ WebappsActor.prototype = {
       run: function run() {
         try {
           readManifest().
-            then(checkSideloading).
             then(writeManifest).
+            then(checkSideloading).
             then(readMetadata).
             then(function ({ metadata, appType }) {
               let origin = metadata.origin;
@@ -346,80 +340,112 @@ WebappsActor.prototype = {
                 receipts: aReceipts,
               };
 
-              self._registerApp(app, aId, aDir);
+              self._registerApp(deferred, app, aId, aDir);
             }, function (error) {
-              self._sendError(error, aId);
+              self._sendError(deferred, error, aId);
             });
         } catch(e) {
           // If anything goes wrong, just send it back.
-          self._sendError(e.toString(), aId);
+          self._sendError(deferred, e.toString(), aId);
         }
       }
     }
 
     Services.tm.currentThread.dispatch(runnable,
                                        Ci.nsIThread.DISPATCH_NORMAL);
+    return deferred.promise;
   },
 
   installPackagedApp: function wa_actorInstallPackaged(aDir, aId, aReceipts) {
     debug("installPackagedApp");
     let self = this;
+    let deferred = promise.defer();
 
     let runnable = {
       run: function run() {
         try {
-          // The destination directory for this app.
-          let installDir = DOMApplicationRegistry._getAppDir(aId);
-
-          // Move application.zip to the destination directory, and
-          // extract manifest.webapp there.
+          // Open the app zip package
           let zipFile = aDir.clone();
           zipFile.append("application.zip");
           let zipReader = Cc["@mozilla.org/libjar/zip-reader;1"]
                             .createInstance(Ci.nsIZipReader);
           zipReader.open(zipFile);
+
+          // Read app manifest `manifest.webapp` from `application.zip`
+          let istream = zipReader.getInputStream("manifest.webapp");
+          let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"]
+                            .createInstance(Ci.nsIScriptableUnicodeConverter);
+          converter.charset = "UTF-8";
+          let jsonString = converter.ConvertToUnicode(
+            NetUtil.readInputStreamToString(istream, istream.available())
+          );
+
+          let manifest;
+          try {
+            manifest = JSON.parse(jsonString);
+          } catch(e) {
+            self._sendError(deferred, "Error Parsing manifest.webapp: " + e, aId);
+          }
+
+          let appType = self._getAppType(manifest.type);
+
+          // In production builds, don't allow installation of certified apps.
+          if (!DOMApplicationRegistry.allowSideloadingCertified &&
+              appType == Ci.nsIPrincipal.APP_STATUS_CERTIFIED) {
+            self._sendError(deferred, "Installing certified apps is not allowed.", aId);
+            return;
+          }
+
+          // Privileged and certified packaged apps can setup a custom origin
+          // via `origin` manifest property
+          let id = aId;
+          if (appType >= Ci.nsIPrincipal.APP_STATUS_PRIVILEGED &&
+              manifest.origin !== undefined) {
+            let uri;
+            try {
+              uri = Services.io.newURI(manifest.origin, null, null);
+            } catch(e) {
+              self._sendError(deferred, "Invalid origin in webapp's manifest", aId);
+            }
+
+            if (uri.scheme != "app") {
+              self._sendError(deferred, "Invalid origin in webapp's manifest", aId);
+            }
+            id = uri.prePath.substring(6);
+          }
+
+          // Only after security checks are made and after final app id is computed
+          // we can move application.zip to the destination directory, and
+          // extract manifest.webapp there.
+          let installDir = DOMApplicationRegistry._getAppDir(id);
           let manFile = installDir.clone();
           manFile.append("manifest.webapp");
           zipReader.extract("manifest.webapp", manFile);
           zipReader.close();
           zipFile.moveTo(installDir, "application.zip");
 
-          DOMApplicationRegistry._loadJSONAsync(manFile, function(aManifest) {
-            if (!aManifest) {
-              self._sendError("Error Parsing manifest.webapp", aId);
-            }
+          let origin = "app://" + id;
 
-            let appType = self._getAppType(aManifest.type);
+          // Create a fake app object with the minimum set of properties we need.
+          let app = {
+            origin: origin,
+            installOrigin: origin,
+            manifestURL: origin + "/manifest.webapp",
+            appStatus: appType,
+            receipts: aReceipts,
+          }
 
-            // In production builds, don't allow installation of certified apps.
-            if (!DOMApplicationRegistry.allowSideloadingCertified &&
-                appType == Ci.nsIPrincipal.APP_STATUS_CERTIFIED) {
-              self._sendError("Installing certified apps is not allowed.", aId);
-              return;
-            }
-
-            let origin = "app://" + aId;
-
-            // Create a fake app object with the minimum set of properties we need.
-            let app = {
-              origin: origin,
-              installOrigin: origin,
-              manifestURL: origin + "/manifest.webapp",
-              appStatus: appType,
-              receipts: aReceipts,
-            }
-
-            self._registerApp(app, aId, aDir);
-          });
+          self._registerApp(deferred, app, id, aDir);
         } catch(e) {
           // If anything goes wrong, just send it back.
-          self._sendError(e.toString(), aId);
+          self._sendError(deferred, e.toString(), aId);
         }
       }
     }
 
     Services.tm.currentThread.dispatch(runnable,
                                        Ci.nsIThread.DISPATCH_NORMAL);
+    return deferred.promise;
   },
 
   /**
@@ -432,13 +458,12 @@ WebappsActor.prototype = {
     debug("install");
 
     let appId = aRequest.appId;
+    let reg = DOMApplicationRegistry;
     if (!appId) {
-      return { error: "missingParameter",
-               message: "missing parameter appId" }
+      appId = reg.makeAppId();
     }
 
     // Check that we are not overriding a preinstalled application.
-    let reg = DOMApplicationRegistry;
     if (appId in reg.webapps && reg.webapps[appId].removable === false) {
       return { error: "badParameterType",
                message: "The application " + appId + " can't be overriden."
@@ -477,49 +502,97 @@ WebappsActor.prototype = {
     let receipts = (aRequest.receipts && Array.isArray(aRequest.receipts))
                     ? aRequest.receipts
                     : [];
-    let manifest, metadata;
 
     if (testFile.exists()) {
-      this.installPackagedApp(appDir, appId, receipts);
-    } else {
-      let missing =
-        ["manifest.webapp", "metadata.json"]
-        .some(function(aName) {
-          testFile = appDir.clone();
-          testFile.append(aName);
-          return !testFile.exists();
-        });
-
-      if (missing) {
-        if (aRequest.manifest && aRequest.metadata &&
-            aRequest.metadata.origin) {
-          manifest = aRequest.manifest;
-          metadata = aRequest.metadata;
-        } else {
-          try {
-            appDir.remove(true);
-          } catch(e) {}
-            return { error: "badParameterType",
-                     message: "hosted app file and manifest/metadata fields are missing" };
-        }
-      }
-
-      this.installHostedApp(appDir, appId, receipts, manifest, metadata);
+      return this.installPackagedApp(appDir, appId, receipts);
     }
 
-    return { appId: appId, path: appDir.path }
+    let manifest, metadata;
+    let missing =
+      ["manifest.webapp", "metadata.json"]
+      .some(function(aName) {
+        testFile = appDir.clone();
+        testFile.append(aName);
+        return !testFile.exists();
+      });
+    if (missing) {
+      if (aRequest.manifest && aRequest.metadata &&
+          aRequest.metadata.origin) {
+        manifest = aRequest.manifest;
+        metadata = aRequest.metadata;
+      } else {
+        try {
+          appDir.remove(true);
+        } catch(e) {}
+        return { error: "badParameterType",
+                 message: "hosted app file and manifest/metadata fields " +
+                          "are missing"
+        };
+      }
+    }
+
+    return this.installHostedApp(appDir, appId, receipts, manifest, metadata);
   },
 
   getAll: function wa_actorGetAll(aRequest) {
     debug("getAll");
 
-    let defer = promise.defer();
+    let deferred = promise.defer();
     let reg = DOMApplicationRegistry;
-    reg.getAll(function onsuccess(apps) {
-      defer.resolve({ apps: apps });
+    reg.getAll(apps => {
+      deferred.resolve({ apps: this._filterAllowedApps(apps) });
     });
 
-    return defer.promise;
+    return deferred.promise;
+  },
+
+  getApp: function wa_actorGetApp(aRequest) {
+    debug("getApp");
+
+    let manifestURL = aRequest.manifestURL;
+    if (!manifestURL) {
+      return { error: "missingParameter",
+               message: "missing parameter manifestURL" };
+    }
+
+    let reg = DOMApplicationRegistry;
+    let app = reg.getAppByManifestURL(manifestURL);
+    if (!app) {
+      return { error: "appNotFound" };
+    }
+
+    if (this._isAppAllowedForManifest(app.manifestURL)) {
+      let deferred = promise.defer();
+      reg.getManifestFor(manifestURL, function (manifest) {
+        app.manifest = manifest;
+        deferred.resolve({app: app});
+      });
+      return deferred.promise;
+    }
+    return { error: "forbidden" };
+  },
+
+  _areCertifiedAppsAllowed: function wa__areCertifiedAppsAllowed() {
+    let pref = "devtools.debugger.forbid-certified-apps";
+    return !Services.prefs.getBoolPref(pref);
+  },
+
+  _isAppAllowedForManifest: function wa__isAppAllowedForManifest(aManifest) {
+    if (this._areCertifiedAppsAllowed()) {
+      return true;
+    }
+    let type = this._getAppType(aManifest.type);
+    return type !== Ci.nsIPrincipal.APP_STATUS_CERTIFIED;
+  },
+
+  _filterAllowedApps: function wa__filterAllowedApps(aApps) {
+    return aApps.filter(app => this._isAppAllowedForManifest(app.manifest));
+  },
+
+  _isAppAllowedForURL: function wa__isAppAllowedForURL(aManifestURL) {
+    return this._findManifestByURL(aManifestURL).then(manifest => {
+      return this._isAppAllowedForManifest(manifest);
+    });
   },
 
   uninstall: function wa_actorUninstall(aRequest) {
@@ -531,19 +604,32 @@ WebappsActor.prototype = {
                message: "missing parameter manifestURL" };
     }
 
-    let defer = promise.defer();
+    let deferred = promise.defer();
     let reg = DOMApplicationRegistry;
     reg.uninstall(
       manifestURL,
       function onsuccess() {
-        defer.resolve({});
+        deferred.resolve({});
       },
       function onfailure(reason) {
-        defer.resolve({ error: reason });
+        deferred.resolve({ error: reason });
       }
     );
 
-    return defer.promise;
+    return deferred.promise;
+  },
+
+  _findManifestByURL: function wa__findManifestByURL(aManifestURL) {
+    let deferred = promise.defer();
+
+    let reg = DOMApplicationRegistry;
+    let id = reg._appIdForManifestURL(aManifestURL);
+
+    reg._readManifests([{ id: id }], function (aResults) {
+      deferred.resolve(aResults[0].manifest);
+    });
+
+    return deferred.promise;
   },
 
   getIconAsDataURL: function (aRequest) {
@@ -564,9 +650,7 @@ WebappsActor.prototype = {
 
     let deferred = promise.defer();
 
-    let id = reg._appIdForManifestURL(manifestURL);
-    reg._readManifests([{ id: id }], function (aResults) {
-      let jsonManifest = aResults[0].manifest;
+    this._findManifestByURL(manifestURL).then(jsonManifest => {
       let manifest = new ManifestHelper(jsonManifest, app.origin);
       let iconURL = manifest.iconURLForSize(aRequest.size || 128);
       if (!iconURL) {
@@ -624,20 +708,20 @@ WebappsActor.prototype = {
                message: "missing parameter manifestURL" };
     }
 
-    let defer = promise.defer();
+    let deferred = promise.defer();
 
     DOMApplicationRegistry.launch(
       aRequest.manifestURL,
       aRequest.startPoint || "",
       Date.now(),
       function onsuccess() {
-        defer.resolve({});
+        deferred.resolve({});
       },
       function onfailure(reason) {
-        defer.resolve({ error: reason });
+        deferred.resolve({ error: reason });
       });
 
-    return defer.promise;
+    return deferred.promise;
   },
 
   close: function wa_actorLaunch(aRequest) {
@@ -680,18 +764,26 @@ WebappsActor.prototype = {
   listRunningApps: function (aRequest) {
     debug("listRunningApps\n");
 
+    let appPromises = [];
     let apps = [];
 
     for each (let frame in this._appFrames()) {
       let manifestURL = frame.getAttribute("mozapp");
-      apps.push(manifestURL);
+
+      appPromises.push(this._isAppAllowedForURL(manifestURL).then(allowed => {
+        if (allowed) {
+          apps.push(manifestURL);
+        }
+      }));
     }
 
-    return { apps: apps };
+    return promise.all(appPromises).then(() => {
+      return { apps: apps };
+    });
   },
 
   _connectToApp: function (aFrame) {
-    let defer = Promise.defer();
+    let deferred = Promise.defer();
 
     let mm = aFrame.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
     mm.loadFrameScript("resource://gre/modules/devtools/server/child.js", false);
@@ -719,7 +811,7 @@ WebappsActor.prototype = {
 
       this._appActorsMap.set(mm, actor);
 
-      defer.resolve(actor);
+      deferred.resolve(actor);
     }).bind(this);
     mm.addMessageListener("debug:actor", onActorCreated);
 
@@ -735,7 +827,7 @@ WebappsActor.prototype = {
           // Otherwise, the app has been closed before the actor
           // had a chance to be created, so we are not able to create
           // the actor.
-          defer.resolve(null);
+          deferred.resolve(null);
         }
         this._appActorsMap.delete(mm);
       }
@@ -746,7 +838,7 @@ WebappsActor.prototype = {
     let prefixStart = this.conn.prefix + "child";
     mm.sendAsyncMessage("debug:connect", { prefix: prefixStart });
 
-    return defer.promise;
+    return deferred.promise;
   },
 
   getAppActor: function ({ manifestURL }) {
@@ -760,42 +852,61 @@ WebappsActor.prototype = {
       }
     }
 
+    let notFoundError = {
+      error: "appNotFound",
+      message: "Unable to find any opened app whose manifest " +
+               "is '" + manifestURL + "'"
+    };
+
     if (!appFrame) {
-      return { error: "appNotFound",
-               message: "Unable to find any opened app whose manifest " +
-                        "is '" + manifestURL + "'" };
+      return notFoundError;
     }
 
-    // Only create a new actor, if we haven't already
-    // instanciated one for this connection.
-    let mm = appFrame.QueryInterface(Ci.nsIFrameLoaderOwner)
-                     .frameLoader
-                     .messageManager;
-    let actor = this._appActorsMap.get(mm);
-    if (!actor) {
-      return this._connectToApp(appFrame)
-                 .then(function (actor) ({ actor: actor }));
-    }
+    return this._isAppAllowedForURL(manifestURL).then(allowed => {
+      if (!allowed) {
+        return notFoundError;
+      }
 
-    return { actor: actor };
+      // Only create a new actor, if we haven't already
+      // instanciated one for this connection.
+      let mm = appFrame.QueryInterface(Ci.nsIFrameLoaderOwner)
+                       .frameLoader
+                       .messageManager;
+      let actor = this._appActorsMap.get(mm);
+      if (!actor) {
+        return this._connectToApp(appFrame)
+                   .then(function (actor) ({ actor: actor }));
+      }
+
+      return { actor: actor };
+    });
   },
 
   watchApps: function () {
     this._openedApps = new Set();
-    let chromeWindow = Services.wm.getMostRecentWindow('navigator:browser');
-    let systemAppFrame = chromeWindow.getContentWindow();
-    systemAppFrame.addEventListener("appwillopen", this);
-    systemAppFrame.addEventListener("appterminated", this);
+    // For now, app open/close events are only implement on b2g
+    if (Services.appinfo.ID == "{3c2e2abc-06d4-11e1-ac3b-374f68613e61}") {
+      let chromeWindow = Services.wm.getMostRecentWindow('navigator:browser');
+      let systemAppFrame = chromeWindow.getContentWindow();
+      systemAppFrame.addEventListener("appwillopen", this);
+      systemAppFrame.addEventListener("appterminated", this);
+    }
+    Services.obs.addObserver(this, "webapps-installed", false);
+    Services.obs.addObserver(this, "webapps-uninstall", false);
 
     return {};
   },
 
   unwatchApps: function () {
     this._openedApps = null;
-    let chromeWindow = Services.wm.getMostRecentWindow('navigator:browser');
-    let systemAppFrame = chromeWindow.getContentWindow();
-    systemAppFrame.removeEventListener("appwillopen", this);
-    systemAppFrame.removeEventListener("appterminated", this);
+    if (Services.appinfo.ID == "{3c2e2abc-06d4-11e1-ac3b-374f68613e61}") {
+      let chromeWindow = Services.wm.getMostRecentWindow('navigator:browser');
+      let systemAppFrame = chromeWindow.getContentWindow();
+      systemAppFrame.removeEventListener("appwillopen", this);
+      systemAppFrame.removeEventListener("appterminated", this);
+    }
+    Services.obs.removeObserver(this, "webapps-installed", false);
+    Services.obs.removeObserver(this, "webapps-uninstall", false);
 
     return {};
   },
@@ -815,20 +926,46 @@ WebappsActor.prototype = {
         }
         this._openedApps.add(manifestURL);
 
-        this.conn.send({ from: this.actorID,
-                         type: "appOpen",
-                         manifestURL: manifestURL
-                       });
+        this._isAppAllowedForURL(manifestURL).then(allowed => {
+          if (allowed) {
+            this.conn.send({ from: this.actorID,
+                             type: "appOpen",
+                             manifestURL: manifestURL
+                           });
+          }
+        });
+
         break;
 
       case "appterminated":
         manifestURL = event.detail.manifestURL;
         this._openedApps.delete(manifestURL);
-        this.conn.send({ from: this.actorID,
-                         type: "appClose",
-                         manifestURL: manifestURL
-                       });
+
+        this._isAppAllowedForURL(manifestURL).then(allowed => {
+          if (allowed) {
+            this.conn.send({ from: this.actorID,
+                             type: "appClose",
+                             manifestURL: manifestURL
+                           });
+          }
+        });
+
         break;
+    }
+  },
+
+  observe: function (subject, topic, data) {
+    let app = JSON.parse(data);
+    if (topic == "webapps-installed") {
+      this.conn.send({ from: this.actorID,
+                       type: "appInstall",
+                       manifestURL: app.manifestURL
+                     });
+    } else if (topic == "webapps-uninstall") {
+      this.conn.send({ from: this.actorID,
+                       type: "appUninstall",
+                       manifestURL: app.manifestURL
+                     });
     }
   }
 };
@@ -846,6 +983,7 @@ if (Services.prefs.getBoolPref("devtools.debugger.enable-content-actors")) {
   let requestTypes = WebappsActor.prototype.requestTypes;
   requestTypes.uploadPackage = WebappsActor.prototype.uploadPackage;
   requestTypes.getAll = WebappsActor.prototype.getAll;
+  requestTypes.getApp = WebappsActor.prototype.getApp;
   requestTypes.launch = WebappsActor.prototype.launch;
   requestTypes.close  = WebappsActor.prototype.close;
   requestTypes.uninstall = WebappsActor.prototype.uninstall;

@@ -7,13 +7,14 @@
 #ifndef jit_LIR_Common_h
 #define jit_LIR_Common_h
 
-#include "jit/RangeAnalysis.h"
 #include "jit/shared/Assembler-shared.h"
 
 // This file declares LIR instructions that are common to every platform.
 
 namespace js {
 namespace jit {
+
+class Range;
 
 template <size_t Temps, size_t ExtraUses = 0>
 class LBinaryMath : public LInstructionHelper<1, 2 + ExtraUses, Temps>
@@ -167,6 +168,9 @@ class LPointer : public LInstructionHelper<1, 0, 0>
     Kind kind() const {
         return kind_;
     }
+    const char *extraName() const {
+        return kind_ == GC_THING ? "GC_THING" : "NON_GC_THING";
+    }
 
     gc::Cell *gcptr() const {
         JS_ASSERT(kind() == GC_THING);
@@ -312,7 +316,7 @@ class LNewArray : public LInstructionHelper<1, 0, 0>
     LIR_HEADER(NewArray)
 
     const char *extraName() const {
-        return mir()->shouldUseVM() ? "VMCall" : NULL;
+        return mir()->shouldUseVM() ? "VMCall" : nullptr;
     }
 
     MNewArray *mir() const {
@@ -326,7 +330,7 @@ class LNewObject : public LInstructionHelper<1, 0, 0>
     LIR_HEADER(NewObject)
 
     const char *extraName() const {
-        return mir()->shouldUseVM() ? "VMCall" : NULL;
+        return mir()->shouldUseVM() ? "VMCall" : nullptr;
     }
 
     MNewObject *mir() const {
@@ -353,12 +357,12 @@ class LNewPar : public LInstructionHelper<1, 1, 2>
         return getOperand(0);
     }
 
-    const LAllocation *getTemp0() {
-        return getTemp(0)->output();
+    const LDefinition *getTemp0() {
+        return getTemp(0);
     }
 
-    const LAllocation *getTemp1() {
-        return getTemp(1)->output();
+    const LDefinition *getTemp1() {
+        return getTemp(1);
     }
 };
 
@@ -389,16 +393,16 @@ class LNewDenseArrayPar : public LCallInstructionHelper<1, 2, 3>
         return getOperand(1);
     }
 
-    const LAllocation *getTemp0() {
-        return getTemp(0)->output();
+    const LDefinition *getTemp0() {
+        return getTemp(0);
     }
 
-    const LAllocation *getTemp1() {
-        return getTemp(1)->output();
+    const LDefinition *getTemp1() {
+        return getTemp(1);
     }
 
-    const LAllocation *getTemp2() {
-        return getTemp(2)->output();
+    const LDefinition *getTemp2() {
+        return getTemp(2);
     }
 };
 
@@ -491,12 +495,38 @@ public:
         return mir_->toNewCallObjectPar();
     }
 
-    const LAllocation *getTemp0() {
-        return getTemp(0)->output();
+    const LDefinition *getTemp0() {
+        return getTemp(0);
     }
 
-    const LAllocation *getTemp1() {
-        return getTemp(1)->output();
+    const LDefinition *getTemp1() {
+        return getTemp(1);
+    }
+};
+
+class LNewDerivedTypedObject : public LCallInstructionHelper<1, 3, 0>
+{
+  public:
+    LIR_HEADER(NewDerivedTypedObject);
+
+    LNewDerivedTypedObject(const LAllocation &type,
+                           const LAllocation &owner,
+                           const LAllocation &offset) {
+        setOperand(0, type);
+        setOperand(1, owner);
+        setOperand(2, offset);
+    }
+
+    const LAllocation *type() {
+        return getOperand(0);
+    }
+
+    const LAllocation *owner() {
+        return getOperand(1);
+    }
+
+    const LAllocation *offset() {
+        return getOperand(2);
     }
 };
 
@@ -655,7 +685,7 @@ class LInterruptCheckImplicit : public LInstructionHelper<0, 0, 0>
     LIR_HEADER(InterruptCheckImplicit)
 
     LInterruptCheckImplicit()
-      : oolEntry_(NULL)
+      : oolEntry_(nullptr)
     {}
 
     Label *oolEntry() {
@@ -991,7 +1021,7 @@ class LJSCallInstructionHelper : public LCallInstructionHelper<Defs, Operands, T
     }
 
     bool hasSingleTarget() const {
-        return getSingleTarget() != NULL;
+        return getSingleTarget() != nullptr;
     }
     JSFunction *getSingleTarget() const {
         return mir()->getSingleTarget();
@@ -1032,11 +1062,11 @@ class LCallGeneric : public LJSCallInstructionHelper<BOX_PIECES, 1, 2>
     const LAllocation *getFunction() {
         return getOperand(0);
     }
-    const LAllocation *getNargsReg() {
-        return getTemp(0)->output();
+    const LDefinition *getNargsReg() {
+        return getTemp(0);
     }
-    const LAllocation *getTempObject() {
-        return getTemp(1)->output();
+    const LDefinition *getTempObject() {
+        return getTemp(1);
     }
 };
 
@@ -1056,8 +1086,8 @@ class LCallKnown : public LJSCallInstructionHelper<BOX_PIECES, 1, 1>
     const LAllocation *getFunction() {
         return getOperand(0);
     }
-    const LAllocation *getTempObject() {
-        return getTemp(0)->output();
+    const LDefinition *getTempObject() {
+        return getTemp(0);
     }
 };
 
@@ -1081,17 +1111,17 @@ class LCallNative : public LJSCallInstructionHelper<BOX_PIECES, 0, 4>
         setTemp(3, tmpreg);
     }
 
-    const LAllocation *getArgContextReg() {
-        return getTemp(0)->output();
+    const LDefinition *getArgContextReg() {
+        return getTemp(0);
     }
-    const LAllocation *getArgUintNReg() {
-        return getTemp(1)->output();
+    const LDefinition *getArgUintNReg() {
+        return getTemp(1);
     }
-    const LAllocation *getArgVpReg() {
-        return getTemp(2)->output();
+    const LDefinition *getArgVpReg() {
+        return getTemp(2);
     }
-    const LAllocation *getTempReg() {
-        return getTemp(3)->output();
+    const LDefinition *getTempReg() {
+        return getTemp(3);
     }
 };
 
@@ -1112,17 +1142,17 @@ class LCallDOMNative : public LJSCallInstructionHelper<BOX_PIECES, 0, 4>
         setTemp(3, argArgs);
     }
 
-    const LAllocation *getArgJSContext() {
-        return getTemp(0)->output();
+    const LDefinition *getArgJSContext() {
+        return getTemp(0);
     }
-    const LAllocation *getArgObj() {
-        return getTemp(1)->output();
+    const LDefinition *getArgObj() {
+        return getTemp(1);
     }
-    const LAllocation *getArgPrivate() {
-        return getTemp(2)->output();
+    const LDefinition *getArgPrivate() {
+        return getTemp(2);
     }
-    const LAllocation *getArgArgs() {
-        return getTemp(3)->output();
+    const LDefinition *getArgArgs() {
+        return getTemp(3);
     }
 };
 
@@ -1146,17 +1176,17 @@ class LDOMPropertyInstructionHelper : public LCallInstructionHelper<defs, 1 + op
     }
 
   public:
-    const LAllocation *getJSContextReg() {
-        return this->getTemp(0)->output();
+    const LDefinition *getJSContextReg() {
+        return this->getTemp(0);
     }
     const LAllocation *getObjectReg() {
         return this->getOperand(0);
     }
-    const LAllocation *getPrivReg() {
-        return this->getTemp(1)->output();
+    const LDefinition *getPrivReg() {
+        return this->getTemp(1);
     }
-    const LAllocation *getValueReg() {
-        return this->getTemp(2)->output();
+    const LDefinition *getValueReg() {
+        return this->getTemp(2);
     }
 };
 
@@ -1216,7 +1246,7 @@ class LApplyArgsGeneric : public LCallInstructionHelper<BOX_PIECES, BOX_PIECES +
     }
 
     bool hasSingleTarget() const {
-        return getSingleTarget() != NULL;
+        return getSingleTarget() != nullptr;
     }
     JSFunction *getSingleTarget() const {
         return mir()->getSingleTarget();
@@ -1230,11 +1260,11 @@ class LApplyArgsGeneric : public LCallInstructionHelper<BOX_PIECES, BOX_PIECES +
     }
     static const size_t ThisIndex = 2;
 
-    const LAllocation *getTempObject() {
-        return getTemp(0)->output();
+    const LDefinition *getTempObject() {
+        return getTemp(0);
     }
-    const LAllocation *getTempCopy() {
-        return getTemp(1)->output();
+    const LDefinition *getTempCopy() {
+        return getTemp(1);
     }
 };
 
@@ -1275,20 +1305,20 @@ class LGetDynamicName : public LCallInstructionHelper<BOX_PIECES, 2, 3>
     }
 };
 
-class LFilterArguments : public LCallInstructionHelper<0, 1, 2>
+class LFilterArgumentsOrEval : public LCallInstructionHelper<0, 1, 2>
 {
   public:
-    LIR_HEADER(FilterArguments)
+    LIR_HEADER(FilterArgumentsOrEval)
 
-    LFilterArguments(const LAllocation &string, const LDefinition &temp1, const LDefinition &temp2)
+    LFilterArgumentsOrEval(const LAllocation &string, const LDefinition &temp1, const LDefinition &temp2)
     {
         setOperand(0, string);
         setTemp(0, temp1);
         setTemp(1, temp2);
     }
 
-    MFilterArguments *mir() const {
-        return mir_->toFilterArguments();
+    MFilterArgumentsOrEval *mir() const {
+        return mir_->toFilterArgumentsOrEval();
     }
 
     const LAllocation *getString() {
@@ -1418,13 +1448,13 @@ class LTestVAndBranch : public LControlInstructionHelper<2, BOX_PIECES, 3>
     }
 
     const char *extraName() const {
-        return mir()->operandMightEmulateUndefined() ? "MightEmulateUndefined" : NULL;
+        return mir()->operandMightEmulateUndefined() ? "MightEmulateUndefined" : nullptr;
     }
 
     static const size_t Input = 0;
 
-    const LAllocation *tempFloat() {
-        return getTemp(0)->output();
+    const LDefinition *tempFloat() {
+        return getTemp(0);
     }
 
     const LDefinition *temp1() {
@@ -1515,6 +1545,9 @@ class LCompare : public LInstructionHelper<1, 2, 0>
     MCompare *mir() {
         return mir_->toCompare();
     }
+    const char *extraName() const {
+        return js_CodeName[jsop_];
+    }
 };
 
 // Compares two integral values of the same JS type, either integer or object.
@@ -1552,6 +1585,9 @@ class LCompareAndBranch : public LControlInstructionHelper<2, 2, 0>
     }
     MCompare *mir() {
         return mir_->toCompare();
+    }
+    const char *extraName() const {
+        return js_CodeName[jsop_];
     }
 };
 
@@ -1943,8 +1979,8 @@ class LNotV : public LInstructionHelper<1, BOX_PIECES, 3>
         setTemp(2, temp2);
     }
 
-    const LAllocation *tempFloat() {
-        return getTemp(0)->output();
+    const LDefinition *tempFloat() {
+        return getTemp(0);
     }
 
     const LDefinition *temp1() {
@@ -1991,9 +2027,9 @@ class LBitOpI : public LInstructionHelper<1, 2, 0>
     { }
 
     const char *extraName() const {
-        if (bitop() == JSOP_URSH && mir_->toUrsh()->canOverflow())
-            return "UrshCanOverflow";
-        return NULL;
+        if (bitop() == JSOP_URSH && mir_->toUrsh()->bailoutsDisabled())
+            return "ursh:BailoutsDisabled";
+        return js_CodeName[op_];
     }
 
     JSOp bitop() const {
@@ -2015,6 +2051,10 @@ class LBitOpV : public LCallInstructionHelper<1, 2 * BOX_PIECES, 0>
 
     JSOp jsop() const {
         return jsop_;
+    }
+
+    const char *extraName() const {
+        return js_CodeName[jsop_];
     }
 
     static const size_t LhsInput = 0;
@@ -2040,6 +2080,10 @@ class LShiftI : public LBinaryMath<0>
 
     MInstruction *mir() {
         return mir_->toInstruction();
+    }
+
+    const char *extraName() const {
+        return js_CodeName[op_];
     }
 };
 
@@ -2096,6 +2140,9 @@ class LMinMaxI : public LInstructionHelper<1, 2, 0>
     MMinMax *mir() const {
         return mir_->toMinMax();
     }
+    const char *extraName() const {
+        return mir()->isMax() ? "Max" : "Min";
+    }
 };
 
 class LMinMaxD : public LInstructionHelper<1, 2, 0>
@@ -2119,6 +2166,9 @@ class LMinMaxD : public LInstructionHelper<1, 2, 0>
     }
     MMinMax *mir() const {
         return mir_->toMinMax();
+    }
+    const char *extraName() const {
+        return mir()->isMax() ? "Max" : "Min";
     }
 };
 
@@ -2285,6 +2335,29 @@ class LMathFunctionD : public LCallInstructionHelper<1, 1, 1>
     MMathFunction *mir() const {
         return mir_->toMathFunction();
     }
+    const char *extraName() const {
+        return MMathFunction::FunctionName(mir()->function());
+    }
+};
+
+class LMathFunctionF : public LCallInstructionHelper<1, 1, 1>
+{
+  public:
+    LIR_HEADER(MathFunctionF)
+    LMathFunctionF(const LAllocation &input, const LDefinition &temp) {
+        setOperand(0, input);
+        setTemp(0, temp);
+    }
+
+    const LDefinition *temp() {
+        return getTemp(0);
+    }
+    MMathFunction *mir() const {
+        return mir_->toMathFunction();
+    }
+    const char *extraName() const {
+        return MMathFunction::FunctionName(mir()->function());
+    }
 };
 
 // Adds two integers, returning an integer value.
@@ -2300,7 +2373,7 @@ class LAddI : public LBinaryMath<0>
     { }
 
     const char *extraName() const {
-        return snapshot() ? "OverflowCheck" : NULL;
+        return snapshot() ? "OverflowCheck" : nullptr;
     }
 
     virtual bool recoversInput() const {
@@ -2324,7 +2397,7 @@ class LSubI : public LBinaryMath<0>
     { }
 
     const char *extraName() const {
-        return snapshot() ? "OverflowCheck" : NULL;
+        return snapshot() ? "OverflowCheck" : nullptr;
     }
 
     virtual bool recoversInput() const {
@@ -2350,6 +2423,10 @@ class LMathD : public LBinaryMath<0>
     JSOp jsop() const {
         return jsop_;
     }
+
+    const char *extraName() const {
+        return js_CodeName[jsop_];
+    }
 };
 
 // Performs an add, sub, mul, or div on two double values.
@@ -2366,6 +2443,10 @@ class LMathF: public LBinaryMath<0>
 
     JSOp jsop() const {
         return jsop_;
+    }
+
+    const char *extraName() const {
+        return js_CodeName[jsop_];
     }
 };
 
@@ -2402,6 +2483,10 @@ class LBinaryV : public LCallInstructionHelper<BOX_PIECES, 2 * BOX_PIECES, 0>
 
     JSOp jsop() const {
         return jsop_;
+    }
+
+    const char *extraName() const {
+        return js_CodeName[jsop_];
     }
 
     static const size_t LhsInput = 0;
@@ -2653,6 +2738,23 @@ class LDoubleToInt32 : public LInstructionHelper<1, 1, 0>
     }
 };
 
+// Convert a float32 to an int32.
+//   Input: floating-point register
+//   Output: 32-bit integer
+//   Bailout: if the float32 cannot be converted to an integer.
+class LFloat32ToInt32 : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(Float32ToInt32)
+
+    LFloat32ToInt32(const LAllocation &in) {
+        setOperand(0, in);
+    }
+
+    MToInt32 *mir() const {
+        return mir_->toToInt32();
+    }
+};
 
 // Convert a double to a truncated int32.
 //   Input: floating-point register
@@ -2774,6 +2876,22 @@ class LOsrScopeChain : public LInstructionHelper<1, 1, 0>
     }
 };
 
+// Materialize a JSObject ArgumentsObject stored in an interpreter frame for OSR.
+class LOsrArgumentsObject : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(OsrArgumentsObject)
+
+    LOsrArgumentsObject(const LAllocation &entry)
+    {
+        setOperand(0, entry);
+    }
+
+    const MOsrArgumentsObject *mir() {
+        return mir_->toOsrArgumentsObject();
+    }
+};
+
 class LRegExp : public LCallInstructionHelper<1, 0, 0>
 {
   public:
@@ -2862,11 +2980,11 @@ class LLambdaPar : public LInstructionHelper<1, 2, 2>
     const MLambdaPar *mir() const {
         return mir_->toLambdaPar();
     }
-    const LAllocation *getTemp0() {
-        return getTemp(0)->output();
+    const LDefinition *getTemp0() {
+        return getTemp(0);
     }
-    const LAllocation *getTemp1() {
-        return getTemp(1)->output();
+    const LDefinition *getTemp1() {
+        return getTemp(1);
     }
 };
 
@@ -3041,6 +3159,20 @@ class LTypedArrayElements : public LInstructionHelper<1, 1, 0>
     }
 };
 
+// Load a typed array's elements vector.
+class LTypedObjectElements : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(TypedObjectElements)
+
+    LTypedObjectElements(const LAllocation &object) {
+        setOperand(0, object);
+    }
+    const LAllocation *object() {
+        return getOperand(0);
+    }
+};
+
 // Bailout if index >= length.
 class LBoundsCheck : public LInstructionHelper<0, 2, 0>
 {
@@ -3117,7 +3249,7 @@ class LLoadElementV : public LInstructionHelper<BOX_PIECES, 2, 0>
     }
 
     const char *extraName() const {
-        return mir()->needsHoleCheck() ? "HoleCheck" : NULL;
+        return mir()->needsHoleCheck() ? "HoleCheck" : nullptr;
     }
 
     const MLoadElement *mir() const {
@@ -3176,7 +3308,7 @@ class LLoadElementHole : public LInstructionHelper<BOX_PIECES, 3, 0>
     }
 
     const char *extraName() const {
-        return mir()->needsHoleCheck() ? "HoleCheck" : NULL;
+        return mir()->needsHoleCheck() ? "HoleCheck" : nullptr;
     }
 
     const MLoadElementHole *mir() const {
@@ -3208,7 +3340,8 @@ class LLoadElementT : public LInstructionHelper<1, 2, 0>
     }
 
     const char *extraName() const {
-        return mir()->needsHoleCheck() ? "HoleCheck" : (mir()->loadDoubles() ? "Doubles" : NULL);
+        return mir()->needsHoleCheck() ? "HoleCheck"
+                                       : (mir()->loadDoubles() ? "Doubles" : nullptr);
     }
 
     const MLoadElement *mir() const {
@@ -3234,7 +3367,7 @@ class LStoreElementV : public LInstructionHelper<0, 2 + BOX_PIECES, 0>
     }
 
     const char *extraName() const {
-        return mir()->needsHoleCheck() ? "HoleCheck" : NULL;
+        return mir()->needsHoleCheck() ? "HoleCheck" : nullptr;
     }
 
     static const size_t Value = 2;
@@ -3266,7 +3399,7 @@ class LStoreElementT : public LInstructionHelper<0, 3, 0>
     }
 
     const char *extraName() const {
-        return mir()->needsHoleCheck() ? "HoleCheck" : NULL;
+        return mir()->needsHoleCheck() ? "HoleCheck" : nullptr;
     }
 
     const MStoreElement *mir() const {
@@ -3926,6 +4059,9 @@ class LSetPropertyPolymorphicT : public LInstructionHelper<0, 2, 1>
     const MSetPropertyPolymorphic *mir() const {
         return mir_->toSetPropertyPolymorphic();
     }
+    const char *extraName() const {
+        return StringFromMIRType(valueType_);
+    }
 };
 
 class LGetElementCacheV : public LInstructionHelper<BOX_PIECES, 1 + BOX_PIECES, 0>
@@ -4140,8 +4276,8 @@ class LForkJoinSlice : public LCallInstructionHelper<1, 0, 1>
         setTemp(0, temp1);
     }
 
-    const LAllocation *getTempReg() {
-        return getTemp(0)->output();
+    const LDefinition *getTempReg() {
+        return getTemp(0);
     }
 };
 
@@ -4240,14 +4376,16 @@ class LCallDeleteElement : public LCallInstructionHelper<1, 2 * BOX_PIECES, 0>
 
 // Patchable jump to stubs generated for a SetProperty cache, which stores a
 // boxed value.
-class LSetPropertyCacheV : public LInstructionHelper<0, 1 + BOX_PIECES, 1>
+class LSetPropertyCacheV : public LInstructionHelper<0, 1 + BOX_PIECES, 2>
 {
   public:
     LIR_HEADER(SetPropertyCacheV)
 
-    LSetPropertyCacheV(const LAllocation &object, const LDefinition &slots) {
+    LSetPropertyCacheV(const LAllocation &object, const LDefinition &slots,
+                       const LDefinition &temp) {
         setOperand(0, object);
         setTemp(0, slots);
+        setTemp(1, temp);
     }
 
     static const size_t Value = 1;
@@ -4255,11 +4393,15 @@ class LSetPropertyCacheV : public LInstructionHelper<0, 1 + BOX_PIECES, 1>
     const MSetPropertyCache *mir() const {
         return mir_->toSetPropertyCache();
     }
+
+    const LDefinition *tempForDispatchCache() {
+        return getTemp(1);
+    }
 };
 
 // Patchable jump to stubs generated for a SetProperty cache, which stores a
 // value of a known type.
-class LSetPropertyCacheT : public LInstructionHelper<0, 2, 1>
+class LSetPropertyCacheT : public LInstructionHelper<0, 2, 2>
 {
     MIRType valueType_;
 
@@ -4267,12 +4409,14 @@ class LSetPropertyCacheT : public LInstructionHelper<0, 2, 1>
     LIR_HEADER(SetPropertyCacheT)
 
     LSetPropertyCacheT(const LAllocation &object, const LDefinition &slots,
-                       const LAllocation &value, MIRType valueType)
+                       const LAllocation &value, const LDefinition &temp,
+                       MIRType valueType)
         : valueType_(valueType)
     {
         setOperand(0, object);
         setOperand(1, value);
         setTemp(0, slots);
+        setTemp(1, temp);
     }
 
     const MSetPropertyCache *mir() const {
@@ -4280,6 +4424,13 @@ class LSetPropertyCacheT : public LInstructionHelper<0, 2, 1>
     }
     MIRType valueType() {
         return valueType_;
+    }
+    const char *extraName() const {
+        return StringFromMIRType(valueType_);
+    }
+
+    const LDefinition *tempForDispatchCache() {
+        return getTemp(1);
     }
 };
 
@@ -4477,17 +4628,69 @@ class LArgumentsLength : public LInstructionHelper<1, 0, 0>
 };
 
 // Load a value from the actual arguments.
-class LGetArgument : public LInstructionHelper<BOX_PIECES, 1, 0>
+class LGetFrameArgument : public LInstructionHelper<BOX_PIECES, 1, 0>
 {
   public:
-    LIR_HEADER(GetArgument)
+    LIR_HEADER(GetFrameArgument)
     BOX_OUTPUT_ACCESSORS()
 
-    LGetArgument(const LAllocation &index) {
+    LGetFrameArgument(const LAllocation &index) {
         setOperand(0, index);
     }
     const LAllocation *index() {
         return getOperand(0);
+    }
+};
+
+// Load a value from the actual arguments.
+class LSetFrameArgumentT : public LInstructionHelper<0, 1, 0>
+{
+  public:
+    LIR_HEADER(SetFrameArgumentT)
+
+    LSetFrameArgumentT(const LAllocation &input) {
+        setOperand(0, input);
+    }
+    MSetFrameArgument *mir() const {
+        return mir_->toSetFrameArgument();
+    }
+    const LAllocation *input() {
+        return getOperand(0);
+    }
+};
+
+// Load a value from the actual arguments.
+class LSetFrameArgumentC : public LInstructionHelper<0, 0, 0>
+{
+    Value val_;
+
+  public:
+    LIR_HEADER(SetFrameArgumentC)
+
+    LSetFrameArgumentC(const Value &val) {
+        val_ = val;
+    }
+    MSetFrameArgument *mir() const {
+        return mir_->toSetFrameArgument();
+    }
+    const Value &val() const {
+        return val_;
+    }
+};
+
+// Load a value from the actual arguments.
+class LSetFrameArgumentV : public LInstructionHelper<0, BOX_PIECES, 0>
+{
+  public:
+    LIR_HEADER(SetFrameArgumentV)
+    BOX_OUTPUT_ACCESSORS()
+
+    LSetFrameArgumentV() {}
+
+    static const size_t Input = 0;
+
+    MSetFrameArgument *mir() const {
+        return mir_->toSetFrameArgument();
     }
 };
 
@@ -4567,8 +4770,8 @@ class LGuardThreadLocalObject : public LCallInstructionHelper<0, 2, 1>
         return getOperand(1);
     }
 
-    const LAllocation *getTempReg() {
-        return getTemp(0)->output();
+    const LDefinition *getTempReg() {
+        return getTemp(0);
     }
 };
 
@@ -4679,6 +4882,24 @@ class LPostWriteBarrierV : public LInstructionHelper<0, 1 + BOX_PIECES, 1>
     }
 };
 
+// Generational write barrier used when writing to multiple slots in an object.
+class LPostWriteBarrierAllSlots : public LInstructionHelper<0, 1, 0>
+{
+  public:
+    LIR_HEADER(PostWriteBarrierAllSlots)
+
+    LPostWriteBarrierAllSlots(const LAllocation &obj) {
+        setOperand(0, obj);
+    }
+
+    const MPostWriteBarrier *mir() const {
+        return mir_->toPostWriteBarrier();
+    }
+    const LAllocation *object() {
+        return getOperand(0);
+    }
+};
+
 // Guard against an object's class.
 class LGuardClass : public LInstructionHelper<0, 1, 1>
 {
@@ -4692,8 +4913,8 @@ class LGuardClass : public LInstructionHelper<0, 1, 1>
     const MGuardClass *mir() const {
         return mir_->toGuardClass();
     }
-    const LAllocation *tempInt() {
-        return getTemp(0)->output();
+    const LDefinition *tempInt() {
+        return getTemp(0);
     }
 };
 
@@ -5097,8 +5318,8 @@ class LAssertRangeI : public LInstructionHelper<0, 1, 0>
     MAssertRange *mir() {
         return mir_->toAssertRange();
     }
-    Range *range() {
-        return mir()->range();
+    const Range *range() {
+        return mir()->assertedRange();
     }
 };
 
@@ -5123,8 +5344,8 @@ class LAssertRangeD : public LInstructionHelper<0, 1, 1>
     MAssertRange *mir() {
         return mir_->toAssertRange();
     }
-    Range *range() {
-        return mir()->range();
+    const Range *range() {
+        return mir()->assertedRange();
     }
 };
 
@@ -5149,8 +5370,8 @@ class LAssertRangeF : public LInstructionHelper<0, 1, 1>
     MAssertRange *mir() {
         return mir_->toAssertRange();
     }
-    Range *range() {
-        return mir()->range();
+    const Range *range() {
+        return mir()->assertedRange();
     }
 };
 
@@ -5182,8 +5403,8 @@ class LAssertRangeV : public LInstructionHelper<0, BOX_PIECES, 3>
     MAssertRange *mir() {
         return mir_->toAssertRange();
     }
-    Range *range() {
-        return mir()->range();
+    const Range *range() {
+        return mir()->assertedRange();
     }
 };
 

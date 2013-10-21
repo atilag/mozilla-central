@@ -6,6 +6,7 @@
 
 Cu.import('resource://gre/modules/ContactService.jsm');
 Cu.import('resource://gre/modules/SettingsChangeNotifier.jsm');
+Cu.import('resource://gre/modules/DataStoreChangeNotifier.jsm');
 Cu.import('resource://gre/modules/AlarmService.jsm');
 Cu.import('resource://gre/modules/ActivitiesService.jsm');
 Cu.import('resource://gre/modules/PermissionPromptHelper.jsm');
@@ -528,6 +529,14 @@ var shell = {
     content.dispatchEvent(event);
   },
 
+  sendCustomEvent: function shell_sendCustomEvent(type, details) {
+    let content = getContentWindow();
+    let event = content.document.createEvent('CustomEvent');
+    let payload = details ? ObjectWrapper.wrap(details, content) : {};
+    event.initCustomEvent(type, true, true, payload);
+    content.dispatchEvent(event);
+  },
+
   sendChromeEvent: function shell_sendChromeEvent(details) {
     if (!this.isHomeLoaded) {
       if (!('pendingChromeEvents' in this)) {
@@ -544,8 +553,7 @@ var shell = {
 
   openAppForSystemMessage: function shell_openAppForSystemMessage(msg) {
     let origin = Services.io.newURI(msg.manifest, null, null).prePath;
-    this.sendChromeEvent({
-      type: 'open-app',
+    let payload = {
       url: msg.uri,
       manifestURL: msg.manifest,
       isActivity: (msg.type == 'activity'),
@@ -554,7 +562,8 @@ var shell = {
       target: msg.target,
       expectingSystemMessage: true,
       extra: msg.extra
-    });
+    }
+    this.sendCustomEvent('open-app', payload);
   },
 
   receiveMessage: function shell_receiveMessage(message) {
@@ -601,6 +610,10 @@ var shell = {
 
     this.sendEvent(window, 'ContentStart');
 
+#ifdef MOZ_B2G_RIL
+    Cu.import('resource://gre/modules/OperatorApps.jsm');
+#endif
+
     content.addEventListener('load', function shell_homeLoaded() {
       content.removeEventListener('load', shell_homeLoaded);
       shell.isHomeLoaded = true;
@@ -631,9 +644,18 @@ Services.obs.addObserver(function onSystemMessageOpenApp(subject, topic, data) {
   shell.openAppForSystemMessage(msg);
 }, 'system-messages-open-app', false);
 
-Services.obs.addObserver(function(aSubject, aTopic, aData) {
+Services.obs.addObserver(function onInterAppCommConnect(subject, topic, data) {
+  data = JSON.parse(data);
+  shell.sendChromeEvent({ type: "inter-app-comm-permission",
+                          chromeEventID: data.callerID,
+                          manifestURL: data.manifestURL,
+                          keyword: data.keyword,
+                          peers: data.appsToSelect });
+}, 'inter-app-comm-select-app', false);
+
+Services.obs.addObserver(function onFullscreenOriginChange(subject, topic, data) {
   shell.sendChromeEvent({ type: "fullscreenoriginchange",
-                          fullscreenorigin: aData });
+                          fullscreenorigin: data });
 }, "fullscreen-origin-change", false);
 
 Services.obs.addObserver(function onWebappsStart(subject, topic, data) {
@@ -699,6 +721,16 @@ var CustomEventManager = {
         break;
       case 'captive-portal-login-cancel':
         CaptivePortalLoginHelper.handleEvent(detail);
+        break;
+      case 'inter-app-comm-permission':
+        Services.obs.notifyObservers(null, 'inter-app-comm-select-app-result',
+          JSON.stringify({ callerID: detail.chromeEventID,
+                           keyword: detail.keyword,
+                           manifestURL: detail.manifestURL,
+                           selectedApps: detail.peers }));
+        break;
+      case 'inputmethod-update-layouts':
+        KeyboardHelper.handleEvent(detail);
         break;
     }
   }
@@ -863,18 +895,20 @@ var AlertsHelper = {
     }
 
     let data = aMessage.data;
+    let details = data.details;
     let listener = {
       mm: aMessage.target,
       title: data.title,
       text: data.text,
-      manifestURL: data.manifestURL,
+      manifestURL: details.manifestURL,
       imageURL: data.imageURL
-    }
+    };
     this.registerAppListener(data.uid, listener);
 
     this.showNotification(data.imageURL, data.title, data.text,
-                          data.textClickable, null,
-                          data.uid, null, null, data.manifestURL);
+                          details.textClickable, null,
+                          data.uid, details.dir,
+                          details.lang, details.manifestURL);
   },
 }
 
@@ -921,12 +955,17 @@ var WebappsHelper = {
             return;
 
           let manifest = new ManifestHelper(aManifest, json.origin);
-          shell.sendChromeEvent({
-            "type": "webapps-launch",
-            "timestamp": json.timestamp,
-            "url": manifest.fullLaunchPath(json.startPoint),
-            "manifestURL": json.manifestURL
-          });
+          let payload = {
+            __exposedProps__: {
+              timestamp: "r",
+              url: "r",
+              manifestURL: "r"
+            },
+            timestamp: json.timestamp,
+            url: manifest.fullLaunchPath(json.startPoint),
+            manifestURL: json.manifestURL
+          }
+          shell.sendEvent(getContentWindow(), "webapps-launch", payload);
         });
         break;
       case "webapps-ask-install":
@@ -938,10 +977,11 @@ var WebappsHelper = {
         });
         break;
       case "webapps-close":
-        shell.sendChromeEvent({
-          "type": "webapps-close",
-          "manifestURL": json.manifestURL
-        });
+        shell.sendEvent(shell.getContentWindow(), "webapps-close",
+          {
+            __exposedProps__: { "manifestURL": "r" },
+            "manifestURL": json.manifestURL
+          });
         break;
     }
   }
@@ -1024,10 +1064,13 @@ let RemoteDebugger = {
       DebuggerServer.addActors('chrome://browser/content/dbg-browser-actors.js');
       DebuggerServer.addActors("resource://gre/modules/devtools/server/actors/webapps.js");
       DebuggerServer.registerModule("devtools/server/actors/device");
+      DebuggerServer.registerModule("devtools/server/actors/inspector")
 
+#ifdef MOZ_WIDGET_GONK
       DebuggerServer.onConnectionChange = function(what) {
         AdbController.updateState();
       }
+#endif
     }
 
     let path = Services.prefs.getCharPref("devtools.debugger.unix-domain-socket") ||
@@ -1051,6 +1094,12 @@ let RemoteDebugger = {
     }
   }
 }
+
+let KeyboardHelper = {
+  handleEvent: function keyboard_handleEvent(detail) {
+    Keyboard.setLayouts(detail.layouts);
+  }
+};
 
 // This is the backend for Gaia's screenshot feature.  Gaia requests a
 // screenshot by sending a mozContentEvent with detail.type set to
@@ -1135,6 +1184,9 @@ window.addEventListener('ContentStart', function cr_onContentStart() {
 });
 
 window.addEventListener('ContentStart', function update_onContentStart() {
+  Cu.import('resource://gre/modules/WebappsUpdater.jsm');
+  WebappsUpdater.handleContentStart(shell);
+
   let promptCc = Cc["@mozilla.org/updates/update-prompt;1"];
   if (!promptCc) {
     return;
@@ -1186,6 +1238,15 @@ window.addEventListener('ContentStart', function update_onContentStart() {
 }, "audio-channel-changed", false);
 })();
 
+(function defaultVolumeChannelChangedTracker() {
+  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+    shell.sendChromeEvent({
+      type: 'default-volume-channel-changed',
+      channel: aData
+    });
+}, "default-volume-channel-changed", false);
+})();
+
 (function visibleAudioChannelChangedTracker() {
   Services.obs.addObserver(function(aSubject, aTopic, aData) {
     shell.sendChromeEvent({
@@ -1198,23 +1259,62 @@ window.addEventListener('ContentStart', function update_onContentStart() {
 
 (function recordingStatusTracker() {
   let gRecordingActiveCount = 0;
+  let gRecordingActiveProcesses = {};
 
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+  let recordingHandler = function(aSubject, aTopic, aData) {
     let oldCount = gRecordingActiveCount;
-    if (aData == "starting") {
-      gRecordingActiveCount += 1;
-    } else if (aData == "shutdown") {
-      gRecordingActiveCount -= 1;
+
+    let processId = (!aSubject) ? 'main'
+                                : aSubject.QueryInterface(Ci.nsIPropertyBag2).get('childID');
+    if (processId && !gRecordingActiveProcesses.hasOwnProperty(processId)) {
+      gRecordingActiveProcesses[processId] = 0;
     }
 
-    // We need to track changes from 1 <-> 0
-    if (gRecordingActiveCount + oldCount == 1) {
+    let currentActive = gRecordingActiveProcesses[processId];
+    switch (aData) {
+      case 'starting':
+        gRecordingActiveCount++;
+        currentActive++;
+        break;
+      case 'shutdown':
+        // Bug 928206 will make shutdown be sent even if no starting.
+        if (currentActive > 0) {
+          gRecordingActiveCount--;
+          currentActive--;
+        }
+        break;
+      case 'content-shutdown':
+        gRecordingActiveCount -= currentActive;
+        currentActive = 0;
+        break;
+    }
+
+    if (currentActive > 0) {
+      gRecordingActiveProcesses[processId] = currentActive;
+    } else {
+      delete gRecordingActiveProcesses[processId];
+    }
+
+    // We need to track changes from N <-> 0
+    if ((oldCount === 0 && gRecordingActiveCount > 0) ||
+        (gRecordingActiveCount === 0 && oldCount > 0)) {
       shell.sendChromeEvent({
         type: 'recording-status',
-        active: (gRecordingActiveCount == 1)
+        active: (gRecordingActiveCount > 0)
       });
     }
-}, "recording-device-events", false);
+  };
+  Services.obs.addObserver(recordingHandler, 'recording-device-events', false);
+  Services.obs.addObserver(recordingHandler, 'recording-device-ipc-events', false);
+
+  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+    // send additional recording events if content process is being killed
+    let props = aSubject.QueryInterface(Ci.nsIPropertyBag2);
+    let childId = aSubject.get('childID');
+    if (gRecordingActiveProcesses.hasOwnProperty(childId) >= 0) {
+      Services.obs.notifyObservers(aSubject, 'recording-device-ipc-events', 'content-shutdown');
+    }
+  }, 'ipc:content-shutdown', false);
 })();
 
 (function volumeStateTracker() {
@@ -1298,3 +1398,56 @@ let SensorsListener = {
 
 SensorsListener.init();
 #endif
+
+// Calling this observer will cause a shutdown an a profile reset.
+// Use eg. : Services.obs.notifyObservers(null, 'b2g-reset-profile', null);
+Services.obs.addObserver(function resetProfile(subject, topic, data) {
+  Services.obs.removeObserver(resetProfile, topic);
+
+  // Listening for 'profile-before-change2' which is late in the shutdown
+  // sequence, but still has xpcom access.
+  Services.obs.addObserver(function clearProfile(subject, topic, data) {
+    Services.obs.removeObserver(clearProfile, topic);
+#ifdef MOZ_WIDGET_GONK
+    let json = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+    json.initWithPath('/system/b2g/webapps/webapps.json');
+    let toRemove = json.exists()
+      // This is a user build, just rm -r /data/local /data/b2g/mozilla
+      ? ['/data/local', '/data/b2g/mozilla']
+      // This is an eng build. We clear the profile and a set of files
+      // under /data/local.
+      : ['/data/b2g/mozilla',
+         '/data/local/permissions.sqlite',
+         '/data/local/storage',
+         '/data/local/OfflineCache'];
+
+    toRemove.forEach(function(dir) {
+      try {
+        let file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+        file.initWithPath(dir);
+        file.remove(true);
+      } catch(e) { dump(e); }
+    });
+#else
+    // Desktop builds.
+    let profile = Services.dirsvc.get('ProfD', Ci.nsIFile);
+
+    // We don't want to remove everything from the profile, since this
+    // would prevent us from starting up.
+    let whitelist = ['defaults', 'extensions', 'settings.json',
+                     'user.js', 'webapps'];
+    let enumerator = profile.directoryEntries;
+    while (enumerator.hasMoreElements()) {
+      let file = enumerator.getNext().QueryInterface(Ci.nsIFile);
+      if (whitelist.indexOf(file.leafName) == -1) {
+        file.remove(true);
+      }
+    }
+#endif
+  },
+  'profile-before-change2', false);
+
+  let appStartup = Cc['@mozilla.org/toolkit/app-startup;1']
+                     .getService(Ci.nsIAppStartup);
+  appStartup.quit(Ci.nsIAppStartup.eForceQuit);
+}, 'b2g-reset-profile', false);

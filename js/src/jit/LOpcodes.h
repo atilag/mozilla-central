@@ -32,6 +32,7 @@
     _(NewPar)                       \
     _(NewDenseArrayPar)             \
     _(NewCallObjectPar)             \
+    _(NewDerivedTypedObject)        \
     _(AbortPar)                     \
     _(InitElem)                     \
     _(InitElemGetterSetter)         \
@@ -47,7 +48,7 @@
     _(ApplyArgsGeneric)             \
     _(Bail)                         \
     _(GetDynamicName)               \
-    _(FilterArguments)              \
+    _(FilterArgumentsOrEval)        \
     _(CallDirectEval)               \
     _(StackArgT)                    \
     _(StackArgV)                    \
@@ -103,6 +104,7 @@
     _(PowD)                         \
     _(Random)                       \
     _(MathFunctionD)                \
+    _(MathFunctionF)                \
     _(NotI)                         \
     _(NotD)                         \
     _(NotO)                         \
@@ -126,6 +128,7 @@
     _(ValueToInt32)                 \
     _(ValueToFloat32)               \
     _(DoubleToInt32)                \
+    _(Float32ToInt32)               \
     _(TruncateDToInt32)             \
     _(IntToString)                  \
     _(DoubleToString)               \
@@ -133,6 +136,7 @@
     _(OsrEntry)                     \
     _(OsrValue)                     \
     _(OsrScopeChain)                \
+    _(OsrArgumentsObject)           \
     _(RegExp)                       \
     _(RegExpTest)                   \
     _(Lambda)                       \
@@ -156,6 +160,7 @@
     _(MonitorTypes)                 \
     _(PostWriteBarrierO)            \
     _(PostWriteBarrierV)            \
+    _(PostWriteBarrierAllSlots)     \
     _(InitializedLength)            \
     _(SetInitializedLength)         \
     _(BoundsCheck)                  \
@@ -220,9 +225,13 @@
     _(ArrayLength)                  \
     _(TypedArrayLength)             \
     _(TypedArrayElements)           \
+    _(TypedObjectElements)          \
     _(StringLength)                 \
     _(ArgumentsLength)              \
-    _(GetArgument)                  \
+    _(GetFrameArgument)             \
+    _(SetFrameArgumentT)            \
+    _(SetFrameArgumentC)            \
+    _(SetFrameArgumentV)            \
     _(RunOncePrologue)              \
     _(Rest)                         \
     _(RestPar)                      \

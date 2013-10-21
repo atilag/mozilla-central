@@ -14,6 +14,7 @@
 #include <algorithm>
 #include "mozilla/Preferences.h"
 #include "soundtouch/SoundTouch.h"
+#include "Latency.h"
 
 #if defined(MOZ_CUBEB)
 #include "nsAutoRef.h"
@@ -40,6 +41,11 @@ PRLogModuleInfo* gAudioStreamLog = nullptr;
 static Mutex* gAudioPrefsLock = nullptr;
 static double gVolumeScale;
 static uint32_t gCubebLatency;
+static bool gCubebLatencyPrefSet;
+static const uint32_t CUBEB_NORMAL_LATENCY_MS = 100;
+
+StaticMutex AudioStream::mMutex;
+uint32_t AudioStream::mPreferredSampleRate = 0;
 
 /**
  * When MOZ_DUMP_AUDIO is set in the environment (to anything),
@@ -64,9 +70,10 @@ static int PrefChanged(const char* aPref, void* aClosure)
     // Arbitrary default stream latency of 100ms.  The higher this
     // value, the longer stream volume changes will take to become
     // audible.
-    uint32_t value = Preferences::GetUint(aPref, 100);
+    gCubebLatencyPrefSet = Preferences::HasUserValue(aPref);
+    uint32_t value = Preferences::GetUint(aPref, CUBEB_NORMAL_LATENCY_MS);
     MutexAutoLock lock(*gAudioPrefsLock);
-    gCubebLatency = std::min<uint32_t>(std::max<uint32_t>(value, 20), 1000);
+    gCubebLatency = std::min<uint32_t>(std::max<uint32_t>(value, 1), 1000);
   }
   return 0;
 }
@@ -95,6 +102,12 @@ static uint32_t GetCubebLatency()
 {
   MutexAutoLock lock(*gAudioPrefsLock);
   return gCubebLatency;
+}
+
+static bool CubebLatencyPrefSet()
+{
+  MutexAutoLock lock(*gAudioPrefsLock);
+  return gCubebLatencyPrefSet;
 }
 #endif
 
@@ -310,7 +323,8 @@ class BufferedAudioStream : public AudioStream
   ~BufferedAudioStream();
 
   nsresult Init(int32_t aNumChannels, int32_t aRate,
-                const dom::AudioChannelType aAudioChannelType);
+                const dom::AudioChannelType aAudioChannelType,
+                AudioStream::LatencyRequest aLatencyRequest);
   void Shutdown();
   nsresult Write(const AudioDataValue* aBuf, uint32_t aFrames);
   uint32_t Available();
@@ -322,6 +336,7 @@ class BufferedAudioStream : public AudioStream
   int64_t GetPosition();
   int64_t GetPositionInFrames();
   int64_t GetPositionInFramesInternal();
+  int64_t GetLatencyInFrames();
   bool IsPaused();
   // This method acquires the monitor and forward the call to the base
   // class, to prevent a race on |mTimeStretcher|, in
@@ -429,6 +444,23 @@ int AudioStream::MaxNumberOfChannels()
   return static_cast<int>(maxNumberOfChannels);
 }
 
+int AudioStream::PreferredSampleRate()
+{
+  StaticMutexAutoLock lock(AudioStream::mMutex);
+  // Get the preferred samplerate for this platform, or fallback to something
+  // sensible if we fail. We cache the value, because this might be accessed
+  // often, and the complexity of the function call below depends on the
+  // backend used.
+  const int fallbackSampleRate = 44100;
+  if (mPreferredSampleRate == 0) {
+    if (cubeb_get_preferred_sample_rate(GetCubebContext(), &mPreferredSampleRate) != CUBEB_OK) {
+      mPreferredSampleRate = fallbackSampleRate;
+    }
+  }
+
+  return mPreferredSampleRate;
+}
+
 static void SetUint16LE(uint8_t* aDest, uint16_t aValue)
 {
   aDest[0] = aValue & 0xFF;
@@ -503,6 +535,7 @@ BufferedAudioStream::BufferedAudioStream()
   : mMonitor("BufferedAudioStream"), mLostFrames(0), mDumpFile(nullptr),
     mVolume(1.0), mBytesPerFrame(0), mState(INITIALIZED)
 {
+  AsyncLatencyLogger::Get(true)->AddRef();
 }
 
 BufferedAudioStream::~BufferedAudioStream()
@@ -511,6 +544,7 @@ BufferedAudioStream::~BufferedAudioStream()
   if (mDumpFile) {
     fclose(mDumpFile);
   }
+  AsyncLatencyLogger::Get()->Release();
 }
 
 nsresult
@@ -522,7 +556,8 @@ BufferedAudioStream::EnsureTimeStretcherInitialized()
 
 nsresult
 BufferedAudioStream::Init(int32_t aNumChannels, int32_t aRate,
-                            const dom::AudioChannelType aAudioChannelType)
+                          const dom::AudioChannelType aAudioChannelType,
+                          AudioStream::LatencyRequest aLatencyRequest)
 {
   cubeb* cubebContext = GetCubebContext();
 
@@ -558,10 +593,22 @@ BufferedAudioStream::Init(int32_t aNumChannels, int32_t aRate,
 
   mAudioClock.Init();
 
+  // If the latency pref is set, use it. Otherwise, if this stream is intended
+  // for low latency playback, try to get the lowest latency possible.
+  // Otherwise, for normal streams, use 100ms.
+  uint32_t latency;
+  if (aLatencyRequest == AudioStream::LowLatency && !CubebLatencyPrefSet()) {
+    if (cubeb_get_min_latency(cubebContext, params, &latency) != CUBEB_OK) {
+      latency = GetCubebLatency();
+    }
+  } else {
+    latency = GetCubebLatency();
+  }
+
   {
     cubeb_stream* stream;
     if (cubeb_stream_init(cubebContext, &stream, "BufferedAudioStream", params,
-                          GetCubebLatency(), DataCallback_S, StateCallback_S, this) == CUBEB_OK) {
+                          latency, DataCallback_S, StateCallback_S, this) == CUBEB_OK) {
       mCubebStream.own(stream);
     }
   }
@@ -627,7 +674,6 @@ BufferedAudioStream::Write(const AudioDataValue* aBuf, uint32_t aFrames)
   }
 
   mWritten += aFrames;
-
   return NS_OK;
 }
 
@@ -775,6 +821,17 @@ BufferedAudioStream::GetPositionInFramesUnlocked()
   return std::min<uint64_t>(adjustedPosition, INT64_MAX);
 }
 
+int64_t
+BufferedAudioStream::GetLatencyInFrames()
+{
+  uint32_t latency;
+  if(cubeb_stream_get_latency(mCubebStream, &latency)) {
+    NS_WARNING("Could not get cubeb latency.");
+    return 0;
+  }
+  return static_cast<int64_t>(latency);
+}
+
 bool
 BufferedAudioStream::IsPaused()
 {
@@ -886,6 +943,14 @@ BufferedAudioStream::DataCallback(void* aBuffer, long aFrames)
   }
 
   WriteDumpFile(mDumpFile, this, aFrames, aBuffer);
+  if (PR_LOG_TEST(GetLatencyLog(), PR_LOG_DEBUG)) {
+    uint32_t latency = UINT32_MAX;
+    if (cubeb_stream_get_latency(mCubebStream, &latency)) {
+      NS_WARNING("Could not get latency from cubeb.");
+    }
+    mLatencyLog->Log(AsyncLatencyLogger::AudioStream, 0, (mBuffer.Length() * 1000) / mOutRate);
+    mLatencyLog->Log(AsyncLatencyLogger::Cubeb, 0, (latency * 1000) / mOutRate);
+  }
 
   mAudioClock.UpdateWritePosition(servicedFrames);
   return servicedFrames;
@@ -962,7 +1027,7 @@ uint64_t AudioClock::GetPosition()
       (static_cast<float>(USECS_PER_S * diffOffset) / mOutRate));
     return position;
   }
-  return -1;
+  return UINT64_MAX;
 }
 
 uint64_t AudioClock::GetPositionInFrames()

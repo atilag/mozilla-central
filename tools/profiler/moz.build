@@ -8,6 +8,7 @@ if CONFIG['MOZ_ENABLE_PROFILER_SPS']:
     FAIL_ON_WARNINGS = not CONFIG['_MSC_VER']
 
     LIBXUL_LIBRARY = True
+    EXPORT_LIBRARY = True
 
     MODULE = 'profiler'
     LIBRARY_NAME = 'profiler'
@@ -18,6 +19,7 @@ if CONFIG['MOZ_ENABLE_PROFILER_SPS']:
     EXPORTS += [
         'GeckoProfilerFunc.h',
         'GeckoProfilerImpl.h',
+        'ProfilerMarkers.h',
         'PseudoStack.h',
         'shared-libraries.h',
     ]
@@ -38,8 +40,10 @@ if CONFIG['MOZ_ENABLE_PROFILER_SPS']:
         'JSCustomObjectBuilder.cpp',
         'IOInterposer.cpp',
         'NSPRInterposer.cpp',
+        'ProfilerBacktrace.cpp',
         'ProfilerIOInterposeObserver.cpp',
-        'SQLiteInterposer.cpp',
+        'ProfilerMarkers.cpp',
+        'SyncProfile.cpp',
     ]
 
     if CONFIG['OS_TARGET'] in ('Android', 'Linux'):
@@ -47,6 +51,10 @@ if CONFIG['MOZ_ENABLE_PROFILER_SPS']:
             'shared-libraries-linux.cc',
             'platform-linux.cc',
         ]
+        if CONFIG['CPU_ARCH'] == 'arm':
+            CPP_SOURCES += [
+                'EHABIStackWalk.cpp',
+            ]
     elif CONFIG['OS_TARGET'] == 'Darwin':
         CPP_SOURCES += [
             'shared-libraries-macos.cc',
@@ -61,13 +69,27 @@ if CONFIG['MOZ_ENABLE_PROFILER_SPS']:
             'platform-win32.cc',
         ]
 
+    LOCAL_INCLUDES += [
+        '/ipc/chromium/src',
+        '/mozglue/linker',
+        '/toolkit/crashreporter/google-breakpad/src',
+    ]
+
+    # We need access to Breakpad's getcontext(3) which is suitable for Android
+    if CONFIG['OS_TARGET'] == 'Android':
+        LOCAL_INCLUDES += [
+            '/toolkit/crashreporter/google-breakpad/src/common/android/include',
+        ]
+
+    if CONFIG['ANDROID_CPU_ARCH'] == 'armeabi':
+        DEFINES['ARCH_ARMV6'] = True
+
 EXPORTS += [
     'GeckoProfiler.h',
 ]
 
 EXPORTS.mozilla += [
     'IOInterposer.h',
-    'SQLiteInterposer.h',
 ]
 
 XPCSHELL_TESTS_MANIFESTS += ['tests/xpcshell.ini']

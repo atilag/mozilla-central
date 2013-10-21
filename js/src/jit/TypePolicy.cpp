@@ -13,6 +13,8 @@
 using namespace js;
 using namespace js::jit;
 
+using JS::DoubleNaNValue;
+
 MDefinition *
 BoxInputsPolicy::boxAt(MInstruction *at, MDefinition *operand)
 {
@@ -28,7 +30,7 @@ BoxInputsPolicy::alwaysBoxAt(MInstruction *at, MDefinition *operand)
     // Replace Float32 by double
     if (operand->type() == MIRType_Float32) {
         MInstruction *replace = MToDouble::New(operand);
-        operand->block()->insertBefore(at, replace);
+        at->block()->insertBefore(at, replace);
         boxedOperand = replace;
     }
     MBox *box = MBox::New(boxedOperand);
@@ -93,7 +95,7 @@ BinaryStringPolicy::adjustInputs(MInstruction *ins)
         if (in->type() == MIRType_String)
             continue;
 
-        MInstruction *replace = NULL;
+        MInstruction *replace = nullptr;
         if (in->type() == MIRType_Int32 || in->type() == MIRType_Double) {
             replace = MToString::New(in);
         } else {
@@ -276,8 +278,7 @@ TypeBarrierPolicy::adjustInputs(MInstruction *def)
             return true;
         }
 
-        MUnbox *unbox = MUnbox::New(ins->getOperand(0), outputType,
-                                    MUnbox::TypeBarrier, ins->bailoutKind());
+        MUnbox *unbox = MUnbox::New(ins->getOperand(0), outputType, MUnbox::TypeBarrier);
         ins->block()->insertBefore(ins, unbox);
         ins->replaceOperand(0, unbox);
         return true;
@@ -414,6 +415,7 @@ IntPolicy<Op>::staticAdjustInputs(MInstruction *def)
 
 template bool IntPolicy<0>::staticAdjustInputs(MInstruction *def);
 template bool IntPolicy<1>::staticAdjustInputs(MInstruction *def);
+template bool IntPolicy<2>::staticAdjustInputs(MInstruction *def);
 
 template <unsigned Op>
 bool
@@ -556,18 +558,6 @@ CallPolicy::adjustInputs(MInstruction *ins)
 {
     MCall *call = ins->toCall();
 
-    // External calls shouldn't have Float32 parameters
-    for (uint32_t i = 0, numArgs = call->numActualArgs(); i < numArgs; i++) {
-        MDefinition *arg = call->getArg(i+1); // arg 0 is |this|
-        if (arg->type() == MIRType_Float32) {
-            JS_ASSERT(arg->isPassArg()); // can't be a type barrier, as Float32 doesn't rely on type inference
-            MPassArg *passArg = arg->toPassArg();
-            MInstruction *replace = MToDouble::New(passArg->getArgument());
-            passArg->replaceOperand(0, replace);
-            call->block()->insertBefore(passArg, replace);
-        }
-    }
-
     MDefinition *func = call->getFunction();
     if (func->type() == MIRType_Object)
         return true;
@@ -633,7 +623,7 @@ StoreTypedArrayPolicy::adjustValueInput(MInstruction *ins, int arrayType,
       case MIRType_Object:
       case MIRType_Undefined:
         value->setFoldedUnchecked();
-        value = MConstant::New(DoubleValue(js_NaN));
+        value = MConstant::New(DoubleNaNValue());
         ins->block()->insertBefore(ins, value->toInstruction());
         break;
       case MIRType_String:
@@ -662,6 +652,11 @@ StoreTypedArrayPolicy::adjustValueInput(MInstruction *ins, int arrayType,
       case ScalarTypeRepresentation::TYPE_INT32:
       case ScalarTypeRepresentation::TYPE_UINT32:
         if (value->type() != MIRType_Int32) {
+            // Workaround for bug 915903
+            if (value->type() == MIRType_Float32) {
+                value = MToDouble::New(value);
+                ins->block()->insertBefore(ins, value->toInstruction());
+            }
             value = MTruncateToInt32::New(value);
             ins->block()->insertBefore(ins, value->toInstruction());
         }

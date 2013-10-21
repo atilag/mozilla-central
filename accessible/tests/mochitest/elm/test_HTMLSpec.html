@@ -694,7 +694,7 @@
           { role: ROLE_TEXT_LEAF }
         ]
       };
-      testElm("input_number", obj);
+      // TODO: re-enable in bug 559761 testElm("input_number", obj);
       testElm("input_email", obj);
       testElm("input_search", obj);
       testElm("input_tel", obj);
@@ -1298,7 +1298,8 @@
     <p>This is a quotation taken from the Mozilla Developer Center.</p>
   </blockquote>
 
-  <p id="br_container"><br></p>
+  <!--  two BRs, one will be eaten -->
+  <p id="br_container"><br><br></p>
 
   <button id="button">button</button>
   <form>

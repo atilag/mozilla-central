@@ -47,6 +47,7 @@
 #define __CCSDP_H__
 
 #include "cpr_types.h"
+#include "ccsdp_rtcp_fb.h"
 
 #define SIPSDP_ILBC_MODE20 20
 
@@ -182,6 +183,7 @@ typedef enum {
     SDP_ATTR_DIRECTION,
     SDP_ATTR_EECID,
     SDP_ATTR_FMTP,
+    SDP_ATTR_SCTPMAP,
     SDP_ATTR_FRAMING,
     SDP_ATTR_INACTIVE,
     SDP_ATTR_PTIME,

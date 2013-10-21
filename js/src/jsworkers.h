@@ -51,8 +51,11 @@ class WorkerThreadState
     uint32_t numPaused;
 
     enum CondVar {
-        MAIN,
-        WORKER
+        /* For notifying threads waiting for work that they may be able to make progress. */
+        CONSUMER,
+
+        /* For notifying threads doing work that they may be able to make progress. */
+        PRODUCER
     };
 
     /* Shared worklist for Ion worker threads. */
@@ -67,6 +70,12 @@ class WorkerThreadState
      * The main thread must pick up finished optimizations and perform codegen.
      */
     Vector<AsmJSParallelTask*, 0, SystemAllocPolicy> asmJSFinishedList;
+
+    /*
+     * For now, only allow a single parallel asm.js compilation to happen at a
+     * time. This avoids race conditions on asmJSWorklist/asmJSFinishedList/etc.
+     */
+    mozilla::Atomic<uint32_t> asmJSCompilationInProgress;
 
     /* Shared worklist for parsing/emitting scripts on worker threads. */
     Vector<ParseTask*, 0, SystemAllocPolicy> parseWorklist, parseFinishedList;
@@ -88,7 +97,6 @@ class WorkerThreadState
 # endif
 
     void wait(CondVar which, uint32_t timeoutMillis = 0);
-    void notify(CondVar which);
     void notifyAll(CondVar which);
 
     bool canStartAsmJSCompile();
@@ -114,7 +122,7 @@ class WorkerThreadState
     }
     void resetAsmJSFailureState() {
         numAsmJSFailedJobs = 0;
-        asmJSFailedFunction = NULL;
+        asmJSFailedFunction = nullptr;
     }
     void *maybeAsmJSFailedFunction() const {
         return asmJSFailedFunction;
@@ -136,11 +144,9 @@ class WorkerThreadState
     PRThread *lockOwner;
 # endif
 
-    /* Condvar to notify the main thread that work has been completed. */
-    PRCondVar *mainWakeup;
-
-    /* Condvar to notify helper threads that they may be able to make progress. */
-    PRCondVar *helperWakeup;
+    /* Condvars for threads waiting/notifying each other. */
+    PRCondVar *consumerWakeup;
+    PRCondVar *producerWakeup;
 
     /*
      * Number of AsmJS workers that encountered failure for the active module.
@@ -229,7 +235,7 @@ StartOffThreadIonCompile(JSContext *cx, jit::IonBuilder *builder);
 
 /*
  * Cancel a scheduled or in progress Ion compilation for script. If script is
- * NULL, all compilations for the compartment are cancelled.
+ * nullptr, all compilations for the compartment are cancelled.
  */
 void
 CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script);
@@ -336,6 +342,23 @@ class AutoPauseWorkersForGC
     ~AutoPauseWorkersForGC();
 };
 
+/*
+ * If the current thread is a worker thread, treat it as paused during this
+ * class's lifetime. This should be used at any time the current thread is
+ * waiting for a worker to complete.
+ */
+class AutoPauseCurrentWorkerThread
+{
+#ifdef JS_WORKER_THREADS
+    ExclusiveContext *cx;
+#endif
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+
+  public:
+    AutoPauseCurrentWorkerThread(ExclusiveContext *cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+    ~AutoPauseCurrentWorkerThread();
+};
+
 /* Wait for any in progress off thread parses to halt. */
 void
 PauseOffThreadParsing();
@@ -354,13 +377,13 @@ struct AsmJSParallelTask
     unsigned compileTime;
 
     AsmJSParallelTask(size_t defaultChunkSize)
-      : lifo(defaultChunkSize), func(NULL), mir(NULL), lir(NULL), compileTime(0)
+      : lifo(defaultChunkSize), func(nullptr), mir(nullptr), lir(nullptr), compileTime(0)
     { }
 
     void init(void *func, jit::MIRGenerator *mir) {
         this->func = func;
         this->mir = mir;
-        this->lir = NULL;
+        this->lir = nullptr;
     }
 };
 #endif
@@ -428,10 +451,10 @@ struct SourceCompressionTask
 
   public:
     explicit SourceCompressionTask(ExclusiveContext *cx)
-      : cx(cx), ss(NULL), chars(NULL), oom(false), abort_(0)
+      : cx(cx), ss(nullptr), chars(nullptr), oom(false), abort_(0)
     {
 #ifdef JS_WORKER_THREADS
-        workerThread = NULL;
+        workerThread = nullptr;
 #endif
     }
 

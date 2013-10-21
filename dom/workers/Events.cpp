@@ -27,8 +27,8 @@ namespace {
 
 class Event : public PrivatizableBase
 {
-  static JSClass sClass;
-  static JSClass sMainRuntimeClass;
+  static const JSClass sClass;
+  static const JSClass sMainRuntimeClass;
 
   static const JSPropertySpec sProperties[];
   static const JSFunctionSpec sFunctions[];
@@ -40,7 +40,7 @@ protected:
 
 public:
   static bool
-  IsThisClass(JSClass* aClass)
+  IsThisClass(const JSClass* aClass)
   {
     return aClass == &sClass || aClass == &sMainRuntimeClass;
   }
@@ -69,7 +69,7 @@ public:
       }
     }
 
-    JSClass* clasp = parentProto ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = parentProto ? &sMainRuntimeClass : &sClass;
 
     JS::Rooted<JSObject*> proto(aCx, JS_InitClass(aCx, aObj, parentProto, clasp, Construct, 0,
                                                   sProperties, sFunctions, nullptr, nullptr));
@@ -94,7 +94,7 @@ public:
   Create(JSContext* aCx, JS::Handle<JSObject*> aParent, JS::Handle<JSString*> aType,
          bool aBubbles, bool aCancelable, bool aMainRuntime)
   {
-    JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
 
     JSObject* obj = JS_NewObject(aCx, clasp, NULL, aParent);
     if (obj) {
@@ -334,7 +334,7 @@ private:
 };
 
 #define DECL_EVENT_CLASS(_varname, _name) \
-  JSClass _varname = { \
+  const JSClass _varname = { \
     _name, \
     JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(SLOT_COUNT), \
     JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub, \
@@ -385,8 +385,8 @@ const dom::ConstantSpec Event::sStaticConstants[] = {
 
 class MessageEvent : public Event
 {
-  static JSClass sClass;
-  static JSClass sMainRuntimeClass;
+  static const JSClass sClass;
+  static const JSClass sMainRuntimeClass;
 
   static const JSPropertySpec sProperties[];
   static const JSFunctionSpec sFunctions[];
@@ -398,7 +398,7 @@ protected:
 
 public:
   static bool
-  IsThisClass(JSClass* aClass)
+  IsThisClass(const JSClass* aClass)
   {
     return aClass == &sClass || aClass == &sMainRuntimeClass;
   }
@@ -407,34 +407,77 @@ public:
   InitClass(JSContext* aCx, JSObject* aObj, JSObject* aParentProto,
             bool aMainRuntime)
   {
-    JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
 
     return JS_InitClass(aCx, aObj, aParentProto, clasp, Construct, 0,
                         sProperties, sFunctions, NULL, NULL);
   }
 
   static JSObject*
-  Create(JSContext* aCx, JS::Handle<JSObject*> aParent, JSAutoStructuredCloneBuffer& aData,
-         nsTArray<nsCOMPtr<nsISupports> >& aClonedObjects, bool aMainRuntime)
+  Create(JSContext* aCx, JS::Handle<JSObject*> aParent,
+         JSAutoStructuredCloneBuffer& aData,
+         nsTArray<nsCOMPtr<nsISupports> >& aClonedObjects,
+         bool aMainRuntime)
   {
     JS::Rooted<JSString*> type(aCx, JS_InternString(aCx, "message"));
     if (!type) {
       return NULL;
     }
 
-    JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
 
     JS::Rooted<JSObject*> obj(aCx, JS_NewObject(aCx, clasp, NULL, aParent));
     if (!obj) {
       return NULL;
     }
 
+    JS::Rooted<JSObject*> ports(aCx, JS_NewArrayObject(aCx, 0, nullptr));
+    if (!ports) {
+      return NULL;
+    }
+
     MessageEvent* priv = new MessageEvent(aMainRuntime);
     SetJSPrivateSafeish(obj, priv);
+
     InitMessageEventCommon(aCx, obj, priv, type, false, false, NULL, NULL, NULL,
-                           true);
+                           ports, true);
+
     priv->mBuffer.swap(aData);
     priv->mClonedObjects.SwapElements(aClonedObjects);
+
+    return obj;
+  }
+
+  static JSObject*
+  Create(JSContext* aCx, JS::Handle<JSObject*> aParent,
+         JS::Handle<JSString*> aType, bool aBubbles, bool aCancelable,
+         JS::Handle<JSString*> aData, JS::Handle<JSString*> aOrigin,
+         JS::Handle<JSObject*> aSource, JS::Handle<JSObject*> aMessagePort,
+         bool aIsTrusted)
+  {
+    JS::Rooted<JSObject*> obj(aCx,
+                              JS_NewObject(aCx, &sClass, nullptr, aParent));
+    if (!obj) {
+      return nullptr;
+    }
+
+    JS::Rooted<JSObject*> ports(aCx);
+    if (aMessagePort) {
+      JS::Value port = OBJECT_TO_JSVAL(aMessagePort);
+      ports = JS_NewArrayObject(aCx, 1, &port);
+    } else {
+      ports = JS_NewArrayObject(aCx, 0, nullptr);
+    }
+
+    if (!ports) {
+      return NULL;
+    }
+
+    MessageEvent* priv = new MessageEvent(false);
+    SetJSPrivateSafeish(obj, priv);
+
+    InitMessageEventCommon(aCx, obj, priv, aType, aBubbles, aCancelable, aData,
+                           aOrigin, aSource, ports, aIsTrusted);
 
     return obj;
   }
@@ -455,6 +498,7 @@ protected:
     SLOT_data = Event::SLOT_COUNT,
     SLOT_origin,
     SLOT_source,
+    SLOT_ports,
 
     SLOT_COUNT,
     SLOT_FIRST = SLOT_data
@@ -464,7 +508,7 @@ private:
   static MessageEvent*
   GetInstancePrivate(JSContext* aCx, JSObject* aObj, const char* aFunctionName)
   {
-    JSClass* classPtr = JS_GetClass(aObj);
+    const JSClass* classPtr = JS_GetClass(aObj);
     if (IsThisClass(classPtr)) {
       return GetJSPrivateSafeish<MessageEvent>(aObj);
     }
@@ -479,7 +523,7 @@ private:
   InitMessageEventCommon(JSContext* aCx, JSObject* aObj, Event* aEvent,
                          JSString* aType, bool aBubbles, bool aCancelable,
                          JSString* aData, JSString* aOrigin, JSObject* aSource,
-                         bool aIsTrusted)
+                         JS::Handle<JSObject*> aMessagePorts, bool aIsTrusted)
   {
     jsval emptyString = JS_GetEmptyStringValue(aCx);
 
@@ -490,6 +534,7 @@ private:
     JS_SetReservedSlot(aObj, SLOT_origin,
                        aOrigin ? STRING_TO_JSVAL(aOrigin) : emptyString);
     JS_SetReservedSlot(aObj, SLOT_source, OBJECT_TO_JSVAL(aSource));
+    JS_SetReservedSlot(aObj, SLOT_ports, OBJECT_TO_JSVAL(aMessagePorts));
   }
 
   static bool
@@ -591,13 +636,13 @@ private:
     }
 
     InitMessageEventCommon(aCx, obj, event, type, bubbles, cancelable,
-                           data, origin, source, false);
+                           data, origin, source, JS::NullPtr(), false);
     return true;
   }
 };
 
 #define DECL_MESSAGEEVENT_CLASS(_varname, _name) \
-  JSClass _varname = { \
+  const JSClass _varname = { \
     _name, \
     JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(SLOT_COUNT), \
     JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub, \
@@ -616,6 +661,8 @@ const JSPropertySpec MessageEvent::sProperties[] = {
           JSPROP_ENUMERATE),
   JS_PSGS("source", Property<SLOT_source>::Get, GetterOnlyJSNative,
           JSPROP_ENUMERATE),
+  JS_PSGS("ports", Property<SLOT_ports>::Get, GetterOnlyJSNative,
+          JSPROP_ENUMERATE),
   JS_PS_END
 };
 
@@ -626,15 +673,15 @@ const JSFunctionSpec MessageEvent::sFunctions[] = {
 
 class ErrorEvent : public Event
 {
-  static JSClass sClass;
-  static JSClass sMainRuntimeClass;
+  static const JSClass sClass;
+  static const JSClass sMainRuntimeClass;
 
   static const JSPropertySpec sProperties[];
   static const JSFunctionSpec sFunctions[];
 
 public:
   static bool
-  IsThisClass(JSClass* aClass)
+  IsThisClass(const JSClass* aClass)
   {
     return aClass == &sClass || aClass == &sMainRuntimeClass;
   }
@@ -643,7 +690,7 @@ public:
   InitClass(JSContext* aCx, JSObject* aObj, JSObject* aParentProto,
             bool aMainRuntime)
   {
-    JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
 
     return JS_InitClass(aCx, aObj, aParentProto, clasp, Construct, 0,
                         sProperties, sFunctions, NULL, NULL);
@@ -658,7 +705,7 @@ public:
       return NULL;
     }
 
-    JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
+    const JSClass* clasp = aMainRuntime ? &sMainRuntimeClass : &sClass;
 
     JS::Rooted<JSObject*> obj(aCx, JS_NewObject(aCx, clasp, NULL, aParent));
     if (!obj) {
@@ -696,7 +743,7 @@ private:
   static ErrorEvent*
   GetInstancePrivate(JSContext* aCx, JSObject* aObj, const char* aFunctionName)
   {
-    JSClass* classPtr = JS_GetClass(aObj);
+    const JSClass* classPtr = JS_GetClass(aObj);
     if (IsThisClass(classPtr)) {
       return GetJSPrivateSafeish<ErrorEvent>(aObj);
     }
@@ -797,7 +844,7 @@ private:
 };
 
 #define DECL_ERROREVENT_CLASS(_varname, _name) \
-  JSClass _varname = { \
+  const JSClass _varname = { \
     _name, \
     JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(SLOT_COUNT), \
     JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub, \
@@ -826,11 +873,11 @@ const JSFunctionSpec ErrorEvent::sFunctions[] = {
 
 class ProgressEvent : public Event
 {
-  static JSClass sClass;
+  static const JSClass sClass;
   static const JSPropertySpec sProperties[];
 
 public:
-  static JSClass*
+  static const JSClass*
   Class()
   {
     return &sClass;
@@ -844,7 +891,7 @@ public:
   }
 
   static JSObject*
-  Create(JSContext* aCx, JS::Handle<JSObject*> aParent, JSString* aType,
+  Create(JSContext* aCx, JS::Handle<JSObject*> aParent, JS::Handle<JSString*> aType,
          bool aLengthComputable, double aLoaded, double aTotal)
   {
     JS::Rooted<JSString*> type(aCx, JS_InternJSString(aCx, aType));
@@ -888,7 +935,7 @@ private:
   static ProgressEvent*
   GetInstancePrivate(JSContext* aCx, JSObject* aObj, const char* aFunctionName)
   {
-    JSClass* classPtr = JS_GetClass(aObj);
+    const JSClass* classPtr = JS_GetClass(aObj);
     if (classPtr == &sClass) {
       return GetJSPrivateSafeish<ProgressEvent>(aObj);
     }
@@ -962,7 +1009,7 @@ private:
   };
 };
 
-JSClass ProgressEvent::sClass = {
+const JSClass ProgressEvent::sClass = {
   "WorkerProgressEvent",
   JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(SLOT_COUNT),
   JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
@@ -983,7 +1030,7 @@ Event*
 Event::GetPrivate(JSObject* aObj)
 {
   if (aObj) {
-    JSClass* classPtr = JS_GetClass(aObj);
+    const JSClass* classPtr = JS_GetClass(aObj);
     if (IsThisClass(classPtr) ||
         MessageEvent::IsThisClass(classPtr) ||
         ErrorEvent::IsThisClass(classPtr) ||
@@ -1041,12 +1088,31 @@ CreateErrorEvent(JSContext* aCx, JS::Handle<JSString*> aMessage,
 }
 
 JSObject*
-CreateProgressEvent(JSContext* aCx, JSString* aType, bool aLengthComputable,
+CreateProgressEvent(JSContext* aCx, JS::Handle<JSString*> aType, bool aLengthComputable,
                     double aLoaded, double aTotal)
 {
   JS::Rooted<JSObject*> global(aCx, JS::CurrentGlobalOrNull(aCx));
   return ProgressEvent::Create(aCx, global, aType, aLengthComputable, aLoaded,
                                aTotal);
+}
+
+JSObject*
+CreateConnectEvent(JSContext* aCx, JS::Handle<JSObject*> aMessagePort)
+{
+  JS::Rooted<JSObject*> global(aCx, JS::CurrentGlobalOrNull(aCx));
+
+  JS::Rooted<JSString*> type(aCx, JS_InternString(aCx, "connect"));
+  if (!type) {
+    return nullptr;
+  }
+
+  JS::Rooted<JSString*> emptyStr(aCx, JS_GetEmptyString(JS_GetRuntime(aCx)));
+  if (!emptyStr) {
+    return nullptr;
+  }
+
+  return MessageEvent::Create(aCx, global, type, false, false, emptyStr,
+                              emptyStr, JS::NullPtr(), aMessagePort, true);
 }
 
 bool

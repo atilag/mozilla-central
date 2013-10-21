@@ -29,6 +29,10 @@ GetUserMediaLog()
 
 #include "MediaEngineWebRTC.h"
 #include "ImageContainer.h"
+#include "nsIComponentRegistrar.h"
+#include "MediaEngineTabVideoSource.h"
+#include "nsITabSource.h"
+
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidBridge.h"
 #endif
@@ -37,6 +41,23 @@ GetUserMediaLog()
 #define LOG(args) PR_LOG(GetUserMediaLog(), PR_LOG_DEBUG, args)
 
 namespace mozilla {
+#ifndef MOZ_B2G_CAMERA
+MediaEngineWebRTC::MediaEngineWebRTC()
+  : mMutex("mozilla::MediaEngineWebRTC")
+  , mVideoEngine(nullptr)
+  , mVoiceEngine(nullptr)
+  , mVideoEngineInit(false)
+  , mAudioEngineInit(false)
+  , mHasTabVideoSource(false)
+{
+  nsCOMPtr<nsIComponentRegistrar> compMgr;
+  NS_GetComponentRegistrar(getter_AddRefs(compMgr));
+  if (compMgr) {
+    compMgr->IsContractIDRegistered(NS_TABSOURCESERVICE_CONTRACTID, &mHasTabVideoSource);
+  }
+}
+#endif
+
 
 void
 MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >* aVSources)
@@ -94,16 +115,14 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
   // get the JVM
   JavaVM *jvm = mozilla::AndroidBridge::Bridge()->GetVM();
 
-  JNIEnv *env;
-  jint res = jvm->AttachCurrentThread(&env, NULL);
-
   if (webrtc::VideoEngine::SetAndroidObjects(jvm, (void*)context) != 0) {
     LOG(("VieCapture:SetAndroidObjects Failed"));
     return;
   }
-
-  env->DeleteGlobalRef(context);
 #endif
+
+  if (mHasTabVideoSource)
+    aVSources->AppendElement(new MediaEngineTabVideoSource());
 
   if (!mVideoEngine) {
     if (!(mVideoEngine = webrtc::VideoEngine::Create())) {
@@ -246,6 +265,22 @@ MediaEngineWebRTC::EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSourc
     if (!mVoiceEngine) {
       return;
     }
+  }
+
+  PRLogModuleInfo *logs = GetWebRTCLogInfo();
+  if (!gWebrtcTraceLoggingOn && logs && logs->level > 0) {
+    // no need to a critical section or lock here
+    gWebrtcTraceLoggingOn = 1;
+
+    const char *file = PR_GetEnv("WEBRTC_TRACE_FILE");
+    if (!file) {
+      file = "WebRTC.log";
+    }
+
+    LOG(("Logging webrtc to %s level %d", __FUNCTION__, file, logs->level));
+
+    mVoiceEngine->SetTraceFilter(logs->level);
+    mVoiceEngine->SetTraceFile(file);
   }
 
   ptrVoEBase = webrtc::VoEBase::GetInterface(mVoiceEngine);

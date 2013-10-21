@@ -12,6 +12,9 @@ const promise = require("sdk/core/promise");
 let {CssLogic} = require("devtools/styleinspector/css-logic");
 let {InplaceEditor, editableField, editableItem} = require("devtools/shared/inplace-editor");
 let {ELEMENT_STYLE, PSEUDO_ELEMENTS} = require("devtools/server/actors/styles");
+let {gDevTools} = Cu.import("resource:///modules/devtools/gDevTools.jsm", {});
+
+const {OutputParser} = require("devtools/output-parser");
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -525,6 +528,8 @@ Rule.prototype = {
    */
   applyProperties: function Rule_applyProperties(aModifications, aName)
   {
+    this.elementStyle.markOverriddenAll();
+
     if (!aModifications) {
       aModifications = this.style.startModifyingProperties();
     }
@@ -538,6 +543,9 @@ Rule.prototype = {
           value: prop.value,
           priority: prop.priority
         });
+        continue;
+      }
+      if (prop.value.trim() === "") {
         continue;
       }
 
@@ -629,6 +637,7 @@ Rule.prototype = {
     if (aValue === aProperty.value && aPriority === aProperty.priority) {
       return;
     }
+
     aProperty.value = aValue;
     aProperty.priority = aPriority;
     this.applyProperties(null, aProperty.name);
@@ -846,6 +855,45 @@ Rule.prototype = {
 
     return false;
   },
+
+  /**
+   * Jump between editable properties in the UI.  Will begin editing the next
+   * name, if possible.  If this is the last element in the set, then begin
+   * editing the previous value.  If this is the *only* element in the set,
+   * then settle for focusing the new property editor.
+   *
+   * @param {TextProperty} aTextProperty
+   *        The text property that will be left to focus on a sibling.
+   *
+   */
+  editClosestTextProperty: function Rule__editClosestTextProperty(aTextProperty)
+  {
+    let index = this.textProps.indexOf(aTextProperty);
+    let previous = false;
+
+    // If this is the last element, move to the previous instead of next
+    if (index === this.textProps.length - 1) {
+      index = index - 1;
+      previous = true;
+    }
+    else {
+      index = index + 1;
+    }
+
+    let nextProp = this.textProps[index];
+
+    // If possible, begin editing the next name or previous value.
+    // Otherwise, settle for focusing the new property element.
+    if (nextProp) {
+      if (previous) {
+        nextProp.editor.valueSpan.click();
+      } else {
+        nextProp.editor.nameSpan.click();
+      }
+    } else {
+      aTextProperty.rule.editor.closeBrace.focus();
+    }
+  }
 };
 
 /**
@@ -955,7 +1003,7 @@ TextProperty.prototype = {
   remove: function TextProperty_remove()
   {
     this.rule.removeProperty(this);
-  }
+  },
 };
 
 
@@ -1000,8 +1048,17 @@ function CssRuleView(aDoc, aStore, aPageStyle)
   this.element.className = "ruleview devtools-monospace";
   this.element.flex = 1;
 
-  this._boundCopy = this._onCopy.bind(this);
-  this.element.addEventListener("copy", this._boundCopy);
+  this._outputParser = new OutputParser();
+
+  this._buildContextMenu = this._buildContextMenu.bind(this);
+  this._contextMenuUpdate = this._contextMenuUpdate.bind(this);
+  this._onSelectAll = this._onSelectAll.bind(this);
+  this._onCopy = this._onCopy.bind(this);
+
+  this.element.addEventListener("copy", this._onCopy);
+
+  this._handlePrefChange = this._handlePrefChange.bind(this);
+  gDevTools.on("pref-changed", this._handlePrefChange);
 
   let options = {
     fixedWidth: true,
@@ -1010,6 +1067,7 @@ function CssRuleView(aDoc, aStore, aPageStyle)
   };
   this.popup = new AutocompletePopup(aDoc.defaultView.parent.document, options);
 
+  this._buildContextMenu();
   this._showEmpty();
 }
 
@@ -1018,6 +1076,120 @@ exports.CssRuleView = CssRuleView;
 CssRuleView.prototype = {
   // The element that we're inspecting.
   _viewedElement: null,
+
+  /**
+   * Build the context menu.
+   */
+  _buildContextMenu: function() {
+    let doc = this.doc.defaultView.parent.document;
+
+    this._contextmenu = doc.createElementNS(XUL_NS, "menupopup");
+    this._contextmenu.addEventListener("popupshowing", this._contextMenuUpdate);
+    this._contextmenu.id = "rule-view-context-menu";
+
+    this.menuitemSelectAll = createMenuItem(this._contextmenu, {
+      label: "ruleView.contextmenu.selectAll",
+      accesskey: "ruleView.contextmenu.selectAll.accessKey",
+      command: this._onSelectAll
+    });
+    this.menuitemCopy = createMenuItem(this._contextmenu, {
+      label: "ruleView.contextmenu.copy",
+      accesskey: "ruleView.contextmenu.copy.accessKey",
+      command: this._onCopy
+    });
+
+    let popupset = doc.documentElement.querySelector("popupset");
+    if (!popupset) {
+      popupset = doc.createElementNS(XUL_NS, "popupset");
+      doc.documentElement.appendChild(popupset);
+    }
+
+    popupset.appendChild(this._contextmenu);
+  },
+
+  /**
+   * Update the context menu. This means enabling or disabling menuitems as
+   * appropriate.
+   */
+  _contextMenuUpdate: function() {
+    let win = this.doc.defaultView;
+
+    // Copy selection.
+    let selection = win.getSelection();
+    let copy;
+
+    if (selection.toString()) {
+      // Panel text selected
+      copy = true;
+    } else if (selection.anchorNode) {
+      // input type="text"
+      let { selectionStart, selectionEnd } = this.doc.popupNode;
+
+      if (isFinite(selectionStart) && isFinite(selectionEnd) &&
+          selectionStart !== selectionEnd) {
+        copy = true;
+      }
+    } else {
+      // No text selected, disable copy.
+      copy = false;
+    }
+
+    this.menuitemCopy.disabled = !copy;
+  },
+
+  /**
+   * Select all text.
+   */
+  _onSelectAll: function()
+  {
+    let win = this.doc.defaultView;
+    let selection = win.getSelection();
+
+    selection.selectAllChildren(this.doc.documentElement);
+  },
+
+  /**
+   * Copy selected text from the rule view.
+   *
+   * @param {Event} event
+   *        The event object.
+   */
+  _onCopy: function(event)
+  {
+    try {
+      let target = event.target;
+      let text;
+
+      if (event.target.nodeName === "menuitem") {
+        target = this.doc.popupNode;
+      }
+
+      if (target.nodeName == "input") {
+        let start = Math.min(target.selectionStart, target.selectionEnd);
+        let end = Math.max(target.selectionStart, target.selectionEnd);
+        let count = end - start;
+        text = target.value.substr(start, count);
+      } else {
+        let win = this.doc.defaultView;
+        let selection = win.getSelection();
+        debugger;
+        text = selection.toString();
+
+        // Remove any double newlines.
+        text = text.replace(/(\r?\n)\r?\n/g, "$1");
+
+        // Remove "inline"
+        let inline = _strings.GetStringFromName("rule.sourceInline");
+        let rx = new RegExp("^" + inline + "\\r?\\n?", "g");
+        text = text.replace(rx, "");
+      }
+
+      clipboardHelper.copyString(text, this.doc);
+      event.preventDefault();
+    } catch(e) {
+      console.error(e);
+    }
+  },
 
   setPageStyle: function(aPageStyle) {
     this.pageStyle = aPageStyle;
@@ -1030,18 +1202,51 @@ CssRuleView.prototype = {
     return this.element.querySelectorAll(".styleinspector-propertyeditor").length > 0;
   },
 
+  _handlePrefChange: function(event, data) {
+    if (data.pref == "devtools.defaultColorUnit") {
+      let element = this._viewedElement;
+      this._viewedElement = null;
+      this.highlight(element);
+    }
+  },
+
   destroy: function CssRuleView_destroy()
   {
     this.clear();
 
-    this.element.removeEventListener("copy", this._boundCopy);
-    delete this._boundCopy;
+    gDevTools.off("pref-changed", this._handlePrefChange);
+
+    this.element.removeEventListener("copy", this._onCopy);
+    delete this._onCopy;
+
+    delete this._outputParser;
+
+    // Remove context menu
+    if (this._contextmenu) {
+      // Destroy the Select All menuitem.
+      this.menuitemSelectAll.removeEventListener("command", this._onSelectAll);
+      this.menuitemSelectAll = null;
+
+      // Destroy the Copy menuitem.
+      this.menuitemCopy.removeEventListener("command", this._onCopy);
+      this.menuitemCopy = null;
+
+      // Destroy the context menu.
+      this._contextmenu.removeEventListener("popupshowing", this._contextMenuUpdate);
+      this._contextmenu.parentNode.removeChild(this._contextmenu);
+      this._contextmenu = null;
+    }
+
+    // We manage the popupNode ourselves so we also need to destroy it.
+    this.doc.popupNode = null;
 
     if (this.element.parentNode) {
       this.element.parentNode.removeChild(this.element);
     }
 
-    this.elementStyle.destroy();
+    if (this.elementStyle) {
+      this.elementStyle.destroy();
+    }
 
     this.popup.destroy();
   },
@@ -1085,13 +1290,13 @@ CssRuleView.prototype = {
   {
     // Ignore refreshes during editing or when no element is selected.
     if (this.isEditing || !this._elementStyle) {
-      return promise.resolve(null);
+      return;
     }
 
     this._clearRules();
 
     // Repopulate the element style.
-    return this._populate();
+    this._populate();
   },
 
   _populate: function() {
@@ -1210,6 +1415,11 @@ CssRuleView.prototype = {
     return this._showPseudoElements;
   },
 
+  _getRuleViewHeaderClassName: function(isPseudo) {
+    let baseClassName = "theme-gutter ruleview-header";
+    return isPseudo ? baseClassName + " ruleview-expandable-header" : baseClassName;
+  },
+
   /**
    * Creates editor UI for each of the rules in _elementStyle.
    */
@@ -1230,7 +1440,7 @@ CssRuleView.prototype = {
       if (seenPseudoElement && !seenNormalElement && !rule.pseudoElement) {
         seenNormalElement = true;
         let div = this.doc.createElementNS(HTML_NS, "div");
-        div.className = "theme-gutter ruleview-header";
+        div.className = this._getRuleViewHeaderClassName();
         div.textContent = this.selectedElementLabel;
         this.element.appendChild(div);
       }
@@ -1238,7 +1448,7 @@ CssRuleView.prototype = {
       let inheritedSource = rule.inheritedSource;
       if (inheritedSource != lastInheritedSource) {
         let div = this.doc.createElementNS(HTML_NS, "div");
-        div.className = "theme-gutter ruleview-header";
+        div.className = this._getRuleViewHeaderClassName();
         div.textContent = inheritedSource;
         lastInheritedSource = inheritedSource;
         this.element.appendChild(div);
@@ -1248,8 +1458,11 @@ CssRuleView.prototype = {
         seenPseudoElement = true;
 
         let div = this.doc.createElementNS(HTML_NS, "div");
-        div.className = "theme-gutter ruleview-header";
+        div.className = this._getRuleViewHeaderClassName(true);
         div.textContent = this.pseudoElementLabel;
+        div.addEventListener("dblclick", () => {
+          this.togglePseudoElementVisibility(!this.showPseudoElements);
+        }, false);
 
         let twisty = this.pseudoElementTwisty =
           this.doc.createElementNS(HTML_NS, "span");
@@ -1263,48 +1476,13 @@ CssRuleView.prototype = {
       }
 
       if (!rule.editor) {
-        new RuleEditor(this, rule);
+        rule.editor = new RuleEditor(this, rule);
       }
 
       this.element.appendChild(rule.editor.element);
     }
 
     this.togglePseudoElementVisibility(this.showPseudoElements);
-  },
-
-  /**
-   * Copy selected text from the rule view.
-   *
-   * @param {Event} aEvent
-   *        The event object.
-   */
-  _onCopy: function CssRuleView_onCopy(aEvent)
-  {
-    let target = aEvent.target;
-
-    let text;
-
-    if (target.nodeName == "input") {
-      let start = Math.min(target.selectionStart, target.selectionEnd);
-      let end = Math.max(target.selectionStart, target.selectionEnd);
-      let count = end - start;
-      text = target.value.substr(start, count);
-    } else {
-      let win = this.doc.defaultView;
-      text = win.getSelection().toString();
-
-      // Remove any double newlines.
-      text = text.replace(/(\r?\n)\r?\n/g, "$1");
-
-      // Remove "inline"
-      let inline = _strings.GetStringFromName("rule.sourceInline");
-      let rx = new RegExp("^" + inline + "\\r?\\n?", "g");
-      text = text.replace(rx, "");
-    }
-
-    clipboardHelper.copyString(text, this.doc);
-
-    aEvent.preventDefault();
   },
 
 };
@@ -1323,7 +1501,6 @@ function RuleEditor(aRuleView, aRule)
   this.ruleView = aRuleView;
   this.doc = this.ruleView.doc;
   this.rule = aRule;
-  this.rule.editor = this;
 
   this._onNewProperty = this._onNewProperty.bind(this);
   this._newPropertyDestroy = this._newPropertyDestroy.bind(this);
@@ -1387,18 +1564,23 @@ RuleEditor.prototype = {
 
     this.element.addEventListener("mousedown", function() {
       this.doc.defaultView.focus();
-
-      let editorNodes =
-        this.doc.querySelectorAll(".styleinspector-propertyeditor");
-
-      if (editorNodes) {
-        for (let node of editorNodes) {
-          if (node.inplaceEditor) {
-            node.inplaceEditor._clear();
-          }
-        }
-      }
     }.bind(this), false);
+
+    this.element.addEventListener("contextmenu", event => {
+      try {
+        // In the sidebar we do not have this.doc.popupNode so we need to save
+        // the node ourselves.
+        this.doc.popupNode = event.explicitOriginalTarget;
+        let win = this.doc.defaultView;
+        win.focus();
+
+        this.ruleView._contextmenu.openPopup(
+          event.target.ownerDocument.documentElement,
+          "overlap", event.clientX, event.clientY, true, false, null);
+      } catch(e) {
+        console.error(e);
+      }
+    }, false);
 
     this.propertyList = createChild(code, "ul", {
       class: "ruleview-propertylist"
@@ -1456,8 +1638,8 @@ RuleEditor.prototype = {
 
     for (let prop of this.rule.textProps) {
       if (!prop.editor) {
-        new TextPropertyEditor(this, prop);
-        this.propertyList.appendChild(prop.editor.element);
+        let editor = new TextPropertyEditor(this, prop);
+        this.propertyList.appendChild(editor.element);
       }
     }
   },
@@ -1571,9 +1753,10 @@ function TextPropertyEditor(aRuleEditor, aProperty)
   this.prop = aProperty;
   this.prop.editor = this;
   this.browserWindow = this.doc.defaultView.top;
+  this.removeOnRevert = this.prop.value === "";
 
-  let sheet = this.prop.rule.sheet;
-  let href = sheet ? (sheet.href || sheet.nodeHref) : null;
+  let domRule = this.prop.rule.domRule;
+  let href = domRule ? domRule.href : null;
   if (href) {
     this.sheetURI = IOService.newURI(href, null, null);
   }
@@ -1583,12 +1766,16 @@ function TextPropertyEditor(aRuleEditor, aProperty)
   this._onStartEditing = this._onStartEditing.bind(this);
   this._onNameDone = this._onNameDone.bind(this);
   this._onValueDone = this._onValueDone.bind(this);
+  this._onValidate = throttle(this._livePreview, 10, this, this.browserWindow);
 
   this._create();
   this.update();
 }
 
 TextPropertyEditor.prototype = {
+  /**
+   * Boolean indicating if the name or value is being currently edited.
+   */
   get editing() {
     return !!(this.nameSpan.inplaceEditor || this.valueSpan.inplaceEditor);
   },
@@ -1617,13 +1804,13 @@ TextPropertyEditor.prototype = {
     this.nameContainer = createChild(this.element, "span", {
       class: "ruleview-namecontainer"
     });
-    this.nameContainer.addEventListener("click", function(aEvent) {
+    this.nameContainer.addEventListener("click", (aEvent) => {
       // Clicks within the name shouldn't propagate any further.
       aEvent.stopPropagation();
       if (aEvent.target === propertyContainer) {
         this.nameSpan.click();
       }
-    }.bind(this), false);
+    }, false);
 
     // Property name, editable when focused.  Property name
     // is committed when the editor is unfocused.
@@ -1636,6 +1823,7 @@ TextPropertyEditor.prototype = {
       start: this._onStartEditing,
       element: this.nameSpan,
       done: this._onNameDone,
+      destroy: this.update.bind(this),
       advanceChars: ':',
       contentType: InplaceEditor.CONTENT_TYPES.CSS_PROPERTY,
       popup: this.popup
@@ -1649,13 +1837,13 @@ TextPropertyEditor.prototype = {
     let propertyContainer = createChild(this.element, "span", {
       class: "ruleview-propertycontainer"
     });
-    propertyContainer.addEventListener("click", function(aEvent) {
+    propertyContainer.addEventListener("click", (aEvent) => {
       // Clicks within the value shouldn't propagate any further.
       aEvent.stopPropagation();
       if (aEvent.target === propertyContainer) {
         this.valueSpan.click();
       }
-    }.bind(this), false);
+    }, false);
 
     // Property value, editable when focused.  Changes to the
     // property value are applied as they are typed, and reverted
@@ -1674,8 +1862,8 @@ TextPropertyEditor.prototype = {
     appendText(propertyContainer, ";");
 
     this.warning = createChild(this.element, "div", {
-      hidden: "",
       class: "ruleview-warning",
+      hidden: "",
       title: CssLogic.l10n("rule.warning.title"),
     });
 
@@ -1689,8 +1877,8 @@ TextPropertyEditor.prototype = {
       start: this._onStartEditing,
       element: this.valueSpan,
       done: this._onValueDone,
-      validate: this._validate.bind(this),
-      warning: this.warning,
+      destroy: this.update.bind(this),
+      validate: this._onValidate,
       advanceChars: ';',
       contentType: InplaceEditor.CONTENT_TYPES.CSS_VALUE,
       property: this.prop,
@@ -1741,7 +1929,9 @@ TextPropertyEditor.prototype = {
       this.enable.removeAttribute("checked");
     }
 
-    if (this.prop.overridden && !this.editing) {
+    this.warning.hidden = this.editing || this.isValid();
+
+    if ((this.prop.overridden || !this.prop.enabled) && !this.editing) {
       this.element.classList.add("ruleview-overridden");
     } else {
       this.element.classList.remove("ruleview-overridden");
@@ -1755,6 +1945,14 @@ TextPropertyEditor.prototype = {
     let val = this.prop.value;
     if (this.prop.priority) {
       val += " !" + this.prop.priority;
+    }
+
+    let store = this.prop.rule.elementStyle.store;
+    let propDirty = store.userProperties.contains(this.prop.rule.style, name);
+    if (propDirty) {
+      this.element.setAttribute("dirty", "");
+    } else {
+      this.element.removeAttribute("dirty");
     }
 
     // Treat URLs differently than other properties.
@@ -1784,17 +1982,13 @@ TextPropertyEditor.prototype = {
 
       appendText(this.valueSpan, val.split(resourceURI)[1]);
     } else {
-      this.valueSpan.textContent = val;
-    }
-
-    this.warning.hidden = this._validate();
-
-    let store = this.prop.rule.elementStyle.store;
-    let propDirty = store.userProperties.contains(this.prop.rule.style, name);
-    if (propDirty) {
-      this.element.setAttribute("dirty", "");
-    } else {
-      this.element.removeAttribute("dirty");
+      let outputParser = this.ruleEditor.ruleView._outputParser;
+      let frag = outputParser.parseCssProperty(name, val, {
+        colorSwatchClass: "ruleview-colorswatch",
+        defaultColorType: !propDirty
+      });
+      this.valueSpan.innerHTML = "";
+      this.valueSpan.appendChild(frag);
     }
 
     // Populate the computed styles.
@@ -1804,6 +1998,7 @@ TextPropertyEditor.prototype = {
   _onStartEditing: function TextPropertyEditor_onStartEditing()
   {
     this.element.classList.remove("ruleview-overridden");
+    this._livePreview(this.prop.value);
   },
 
   /**
@@ -1840,10 +2035,18 @@ TextPropertyEditor.prototype = {
       });
       appendText(li, ": ");
 
+      let outputParser = this.ruleEditor.ruleView._outputParser;
+      let frag = outputParser.parseCssProperty(
+        computed.name, computed.value, {
+          colorSwatchClass: "ruleview-colorswatch"
+        }
+      );
+
       createChild(li, "span", {
         class: "ruleview-propertyvalue theme-fg-color1",
-        textContent: computed.value
+        child: frag
       });
+
       appendText(li, ";");
     }
 
@@ -1896,19 +2099,13 @@ TextPropertyEditor.prototype = {
    */
   _onNameDone: function TextPropertyEditor_onNameDone(aValue, aCommit)
   {
-    if (!aCommit) {
-      if (this.prop.overridden) {
-        this.element.classList.add("ruleview-overridden");
+    if (aCommit) {
+      if (aValue.trim() === "") {
+        this.remove();
+      } else {
+        this.prop.setName(aValue);
       }
-
-      return;
     }
-    if (!aValue) {
-      this.prop.remove();
-      this.element.parentNode.removeChild(this.element);
-      return;
-    }
-    this.prop.setName(aValue);
   },
 
   /**
@@ -1929,6 +2126,17 @@ TextPropertyEditor.prototype = {
   },
 
   /**
+   * Remove property from style and the editors from DOM.
+   * Begin editing next available property.
+   */
+  remove: function TextPropertyEditor_remove()
+  {
+    this.element.parentNode.removeChild(this.element);
+    this.ruleEditor.rule.editClosestTextProperty(this.prop);
+    this.prop.remove();
+  },
+
+  /**
    * Called when a value editor closes.  If the user pressed escape,
    * revert to the value this property had before editing.
    *
@@ -1941,27 +2149,56 @@ TextPropertyEditor.prototype = {
   {
     if (aCommit) {
       let val = this._parseValue(aValue);
-      this.prop.setValue(val.value, val.priority);
-      this.committed.value = this.prop.value;
-      this.committed.priority = this.prop.priority;
-      if (this.prop.overridden) {
-        this.element.classList.add("ruleview-overridden");
+      // Any property should be removed if has an empty value.
+      if (val.value.trim() === "") {
+        this.remove();
+      } else {
+        this.prop.setValue(val.value, val.priority);
+        this.removeOnRevert = false;
+        this.committed.value = this.prop.value;
+        this.committed.priority = this.prop.priority;
       }
     } else {
-      this.prop.setValue(this.committed.value, this.committed.priority);
+      // A new property should be removed when escape is pressed.
+      if (this.removeOnRevert) {
+        this.remove();
+      } else {
+        this.prop.setValue(this.committed.value, this.committed.priority);
+      }
     }
   },
 
   /**
-   * Validate this property.
+   * Live preview this property, without committing changes.
    *
    * @param {string} [aValue]
-   *        Override the actual property value used for validation without
-   *        applying property values e.g. validate as you type.
+   *        The value to set the current property to.
+   */
+  _livePreview: function TextPropertyEditor_livePreview(aValue)
+  {
+    // Since function call is throttled, we need to make sure we are still editing
+    if (!this.editing) {
+      return;
+    }
+
+    let val = this._parseValue(aValue);
+
+    // Live previewing the change without committing just yet, that'll be done in _onValueDone
+    // If it was not a valid value, apply an empty string to reset the live preview
+    this.ruleEditor.rule.setPropertyValue(this.prop, val.value, val.priority);
+  },
+
+  /**
+   * Validate this property. Does it make sense for this value to be assigned
+   * to this property name? This does not apply the property value
+   *
+   * @param {string} [aValue]
+   *        The property value used for validation.
+   *        Defaults to the current value for this.prop
    *
    * @return {bool} true if the property value is valid, false otherwise.
    */
-  _validate: function TextPropertyEditor_validate(aValue)
+  isValid: function TextPropertyEditor_isValid(aValue)
   {
     let name = this.prop.name;
     let value = typeof aValue == "undefined" ? this.prop.value : aValue;
@@ -1971,18 +2208,18 @@ TextPropertyEditor.prototype = {
     let prefs = Services.prefs;
 
     // We toggle output of errors whilst the user is typing a property value.
-    let prefVal = Services.prefs.getBoolPref("layout.css.report_errors");
+    let prefVal = prefs.getBoolPref("layout.css.report_errors");
     prefs.setBoolPref("layout.css.report_errors", false);
 
+    let validValue = false;
     try {
       style.setProperty(name, val.value, val.priority);
-      // Live previewing the change without committing yet just yet, that'll be done in _onValueDone
-      this.ruleEditor.rule.setPropertyValue(this.prop, val.value, val.priority);
+      validValue = style.getPropertyValue(name) !== "" || val.value === "";
     } finally {
       prefs.setBoolPref("layout.css.report_errors", prefVal);
     }
-    return !!style.getPropertyValue(name);
-  },
+    return validValue;
+  }
 };
 
 /**
@@ -2086,6 +2323,8 @@ function createChild(aParent, aTag, aAttributes)
     if (aAttributes.hasOwnProperty(attr)) {
       if (attr === "textContent") {
         elt.textContent = aAttributes[attr];
+      } else if(attr === "child") {
+        elt.appendChild(aAttributes[attr]);
       } else {
         elt.setAttribute(attr, aAttributes[attr]);
       }
@@ -2098,6 +2337,7 @@ function createChild(aParent, aTag, aAttributes)
 function createMenuItem(aMenu, aAttributes)
 {
   let item = aMenu.ownerDocument.createElementNS(XUL_NS, "menuitem");
+
   item.setAttribute("label", _strings.GetStringFromName(aAttributes.label));
   item.setAttribute("accesskey", _strings.GetStringFromName(aAttributes.accesskey));
   item.addEventListener("command", aAttributes.command);
@@ -2106,6 +2346,22 @@ function createMenuItem(aMenu, aAttributes)
 
   return item;
 }
+
+
+function throttle(func, wait, scope, window) {
+  var timer = null;
+  return function() {
+    if(timer) {
+      window.clearTimeout(timer);
+    }
+    var args = arguments;
+    timer = window.setTimeout(function() {
+      timer = null;
+      func.apply(scope, args);
+    }, wait);
+  };
+}
+
 
 /**
  * Append a text node to an element.

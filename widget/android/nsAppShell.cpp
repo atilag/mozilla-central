@@ -6,7 +6,6 @@
 #include "nsAppShell.h"
 
 #include "base/basictypes.h"
-#include "nspr/prtypes.h"
 #include "base/message_loop.h"
 #include "base/task.h"
 #include "mozilla/Hal.h"
@@ -541,6 +540,27 @@ nsAppShell::ProcessNextNativeEvent(bool mayWait)
 
     case AndroidGeckoEvent::ADD_OBSERVER:
         AddObserver(curEvent->Characters(), curEvent->Observer());
+        break;
+
+    case AndroidGeckoEvent::PREFERENCES_GET:
+    case AndroidGeckoEvent::PREFERENCES_OBSERVE: {
+        const nsTArray<nsString> &prefNames = curEvent->PrefNames();
+        size_t count = prefNames.Length();
+        nsAutoArrayPtr<const PRUnichar*> prefNamePtrs(new const PRUnichar*[count]);
+        for (size_t i = 0; i < count; ++i) {
+            prefNamePtrs[i] = prefNames[i].get();
+        }
+
+        if (curEvent->Type() == AndroidGeckoEvent::PREFERENCES_GET) {
+            mBrowserApp->GetPreferences(curEvent->RequestId(), prefNamePtrs, count);
+        } else {
+            mBrowserApp->ObservePreferences(curEvent->RequestId(), prefNamePtrs, count);
+        }
+        break;
+    }
+
+    case AndroidGeckoEvent::PREFERENCES_REMOVE_OBSERVERS:
+        mBrowserApp->RemovePreferenceObservers(curEvent->RequestId());
         break;
 
     case AndroidGeckoEvent::LOW_MEMORY:

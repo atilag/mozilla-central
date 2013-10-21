@@ -17,17 +17,13 @@ const DEFAULT_CAPTURE_TIMEOUT = 30000; // ms
 const DESTROY_BROWSER_TIMEOUT = 60000; // ms
 const FRAME_SCRIPT_URL = "chrome://global/content/backgroundPageThumbsContent.js";
 
-// If a request for a thumbnail comes in and we find one that is "stale"
-// (or don't find one at all) we automatically queue a request to generate a
-// new one.
-const MAX_THUMBNAIL_AGE_SECS = 172800; // 2 days == 60*60*24*2 == 172800 secs.
-
 const TELEMETRY_HISTOGRAM_ID_PREFIX = "FX_THUMBNAILS_BG_";
 
-// possible FX_THUMBNAILS_BG_CAPTURE_DONE_REASON telemetry values
+// possible FX_THUMBNAILS_BG_CAPTURE_DONE_REASON_2 telemetry values
 const TEL_CAPTURE_DONE_OK = 0;
 const TEL_CAPTURE_DONE_TIMEOUT = 1;
 // 2 and 3 were used when we had special handling for private-browsing.
+const TEL_CAPTURE_DONE_CRASHED = 4;
 
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -63,7 +59,7 @@ const BackgroundPageThumbs = {
   capture: function (url, options={}) {
     if (!PageThumbs._prefEnabled()) {
       if (options.onDone)
-        schedule(() => options.onDone(null));
+        schedule(() => options.onDone(url));
       return;
     }
     this._captureQueue = this._captureQueue || [];
@@ -87,11 +83,8 @@ const BackgroundPageThumbs = {
   },
 
   /**
-   * Checks if an existing thumbnail for the specified URL is either missing
-   * or stale, and if so, queues a background request to capture it.  That
-   * capture process will send a notification via the observer service on
-   * capture, so consumers should watch for such observations if they want to
-   * be notified of an updated thumbnail.
+   * Asynchronously captures a thumbnail of the given URL if one does not
+   * already exist.  Otherwise does nothing.
    *
    * WARNING: BackgroundPageThumbs.jsm is currently excluded from release
    * builds.  If you use it, you must also exclude your caller when
@@ -102,19 +95,21 @@ const BackgroundPageThumbs = {
    * @param options  An optional object that configures the capture.  See
    *                 capture() for description.
    */
-  captureIfStale: function PageThumbs_captureIfStale(url, options={}) {
-    PageThumbsStorage.isFileRecentForURL(url, MAX_THUMBNAIL_AGE_SECS).then(
-      result => {
-        if (result.ok) {
-          if (options.onDone)
-            options.onDone(url);
-          return;
-        }
-        this.capture(url, options);
-      }, err => {
+  captureIfMissing: function (url, options={}) {
+    // The fileExistsForURL call is an optimization, potentially but unlikely
+    // incorrect, and no big deal when it is.  After the capture is done, we
+    // atomically test whether the file exists before writing it.
+    PageThumbsStorage.fileExistsForURL(url).then(exists => {
+      if (exists.ok) {
         if (options.onDone)
           options.onDone(url);
-      });
+        return;
+      }
+      this.capture(url, options);
+    }, err => {
+      if (options.onDone)
+        options.onDone(url);
+    });
   },
 
   /**
@@ -207,7 +202,7 @@ const BackgroundPageThumbs = {
       // "resetting" the capture requires more work - so for now, we just
       // discard it.
       if (curCapture && curCapture.pending) {
-        curCapture._done(null);
+        curCapture._done(null, TEL_CAPTURE_DONE_CRASHED);
         // _done automatically continues queue processing.
       }
       // else: we must have been idle and not currently doing a capture (eg,
@@ -337,34 +332,35 @@ Capture.prototype = {
       delete this._msgMan;
     }
     delete this.captureCallback;
-    Services.ww.unregisterNotification(this);
+    delete this.doneCallbacks;
+    delete this.options;
   },
 
   // Called when the didCapture message is received.
   receiveMessage: function (msg) {
-    tel("CAPTURE_DONE_REASON", TEL_CAPTURE_DONE_OK);
     tel("CAPTURE_SERVICE_TIME_MS", new Date() - this.startDate);
 
     // A different timed-out capture may have finally successfully completed, so
     // discard messages that aren't meant for this capture.
     if (msg.json.id == this.id)
-      this._done(msg.json);
+      this._done(msg.json, TEL_CAPTURE_DONE_OK);
   },
 
   // Called when the timeout timer fires.
   notify: function () {
-    tel("CAPTURE_DONE_REASON", TEL_CAPTURE_DONE_TIMEOUT);
-    this._done(null);
+    this._done(null, TEL_CAPTURE_DONE_TIMEOUT);
   },
 
-  _done: function (data) {
+  _done: function (data, reason) {
     // Note that _done will be called only once, by either receiveMessage or
-    // notify, since it calls destroy, which cancels the timeout timer and
+    // notify, since it calls destroy here, which cancels the timeout timer and
     // removes the didCapture message listener.
-
-    this.captureCallback(this);
+    let { captureCallback, doneCallbacks, options } = this;
     this.destroy();
 
+    if (typeof(reason) != "number")
+      throw new Error("A done reason must be given.");
+    tel("CAPTURE_DONE_REASON_2", reason);
     if (data && data.telemetry) {
       // Telemetry is currently disabled in the content process (bug 680508).
       for (let id in data.telemetry) {
@@ -372,24 +368,25 @@ Capture.prototype = {
       }
     }
 
-    let callOnDones = function callOnDonesFn() {
-      for (let callback of this.doneCallbacks) {
+    let done = () => {
+      captureCallback(this);
+      for (let callback of doneCallbacks) {
         try {
-          callback.call(this.options, this.url);
+          callback.call(options, this.url);
         }
         catch (err) {
           Cu.reportError(err);
         }
       }
-    }.bind(this);
+    };
 
     if (!data) {
-      callOnDones();
+      done();
       return;
     }
 
-    PageThumbs._store(this.url, data.finalURL, data.imageData, data.wasErrorResponse)
-              .then(callOnDones);
+    PageThumbs._store(this.url, data.finalURL, data.imageData, true)
+              .then(done, done);
   },
 };
 

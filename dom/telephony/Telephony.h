@@ -7,7 +7,7 @@
 #ifndef mozilla_dom_telephony_telephony_h__
 #define mozilla_dom_telephony_telephony_h__
 
-#include "TelephonyCommon.h"
+#include "mozilla/dom/telephony/TelephonyCommon.h"
 
 #include "nsITelephonyProvider.h"
 
@@ -19,11 +19,8 @@ class nsPIDOMWindow;
 
 namespace mozilla {
 namespace dom {
-class TelephonyCallOrTelephonyCallGroupReturnValue;
-}
-}
 
-BEGIN_TELEPHONY_NAMESPACE
+class OwningTelephonyCallOrTelephonyCallGroup;
 
 class Telephony MOZ_FINAL : public nsDOMEventTargetHelper
 {
@@ -87,7 +84,7 @@ public:
   SetSpeakerEnabled(bool aEnabled, ErrorResult& aRv);
 
   void
-  GetActive(Nullable<TelephonyCallOrTelephonyCallGroupReturnValue>& aValue);
+  GetActive(Nullable<OwningTelephonyCallOrTelephonyCallGroup>& aValue);
 
   already_AddRefed<CallsList>
   Calls() const;
@@ -108,8 +105,6 @@ public:
 
   static already_AddRefed<Telephony>
   Create(nsPIDOMWindow* aOwner, ErrorResult& aRv);
-
-  static bool CheckPermission(nsPIDOMWindow* aOwner);
 
   void
   AddCall(TelephonyCall* aCall)
@@ -181,6 +176,7 @@ private:
   Shutdown();
 };
 
-END_TELEPHONY_NAMESPACE
+} // namespace dom
+} // namespace mozilla
 
 #endif // mozilla_dom_telephony_telephony_h__

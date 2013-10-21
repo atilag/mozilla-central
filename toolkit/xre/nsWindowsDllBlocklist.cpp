@@ -19,7 +19,7 @@
 #include "prlog.h"
 
 #include "nsWindowsDllInterceptor.h"
-#include "nsWindowsHelpers.h"
+#include "mozilla/WindowsVersion.h"
 
 using namespace mozilla;
 
@@ -131,7 +131,14 @@ static DllBlockInfo sWindowsDllBlocklist[] = {
   { "opnx.dll", MAKE_VERSION(1, 3, 334, 9) },
   { "prnx.dll", MAKE_VERSION(1, 3, 334, 9) },
 
-  { NULL, 0 }
+  // Older belgian ID card software causes Firefox to crash or hang on
+  // shutdown, bug 831285 and 918399.
+  { "beid35cardlayer.dll", MAKE_VERSION(3, 5, 6, 6968) },
+
+  // bug 925459, bitguard crashes
+  { "bitguard.dll", MAKE_VERSION(2, 6, 1694, 24) },
+
+  { nullptr, 0 }
 };
 
 #ifndef STATUS_DLL_NOT_FOUND
@@ -184,10 +191,11 @@ CheckASLR(const wchar_t* path)
   bool retval = false;
 
   HANDLE file = ::CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
-                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                              NULL);
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
   if (file != INVALID_HANDLE_VALUE) {
-    HANDLE map = ::CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    HANDLE map = ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0,
+                                      nullptr);
     if (map) {
       RVAMap<IMAGE_DOS_HEADER> peHeader(map, 0);
       if (peHeader) {
@@ -274,11 +282,12 @@ wchar_t* getFullPath (PWCHAR filePath, wchar_t* fname)
   // In Windows 8, the first parameter seems to be used for more than just the
   // path name.  For example, its numerical value can be 1.  Passing a non-valid
   // pointer to SearchPathW will cause a crash, so we need to check to see if we
-  // are handed a valid pointer, and otherwise just pass NULL to SearchPathW.
-  PWCHAR sanitizedFilePath = (intptr_t(filePath) < 1024) ? NULL : filePath;
+  // are handed a valid pointer, and otherwise just pass nullptr to SearchPathW.
+  PWCHAR sanitizedFilePath = (intptr_t(filePath) < 1024) ? nullptr : filePath;
 
   // figure out the length of the string that we need
-  DWORD pathlen = SearchPathW(sanitizedFilePath, fname, L".dll", 0, NULL, NULL);
+  DWORD pathlen = SearchPathW(sanitizedFilePath, fname, L".dll", 0, nullptr,
+                              nullptr);
   if (pathlen == 0) {
     return nullptr;
   }
@@ -290,18 +299,9 @@ wchar_t* getFullPath (PWCHAR filePath, wchar_t* fname)
   }
 
   // now actually grab it
-  SearchPathW(sanitizedFilePath, fname, L".dll", pathlen+1, full_fname, NULL);
+  SearchPathW(sanitizedFilePath, fname, L".dll", pathlen + 1, full_fname,
+              nullptr);
   return full_fname;
-}
-
-static bool
-IsWin8OrLater()
-{
-  OSVERSIONINFOW osInfo;
-  osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOW);
-  GetVersionExW(&osInfo);
-  return (osInfo.dwMajorVersion > 6) ||
-    (osInfo.dwMajorVersion >= 6 && osInfo.dwMinorVersion >= 2);
 }
 
 static NTSTATUS NTAPI

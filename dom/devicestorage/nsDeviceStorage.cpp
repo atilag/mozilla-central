@@ -47,6 +47,7 @@
 #include "nsCExternalHandlerService.h"
 #include "nsIPermissionManager.h"
 #include "nsIStringBundle.h"
+#include "nsIDocument.h"
 #include <algorithm>
 
 #include "mozilla/dom/DeviceStorageBinding.h"
@@ -1367,17 +1368,14 @@ InterfaceToJsval(nsPIDOMWindow* aWindow,
     return JSVAL_NULL;
   }
 
-  JS::RootedObject scopeObj(cx, sgo->GetGlobalJSObject());
+  JS::Rooted<JSObject*> scopeObj(cx, sgo->GetGlobalJSObject());
   NS_ENSURE_TRUE(scopeObj, JSVAL_NULL);
   JSAutoCompartment ac(cx, scopeObj);
 
 
   JS::Rooted<JS::Value> someJsVal(cx);
-  nsresult rv = nsContentUtils::WrapNative(cx,
-                                           scopeObj,
-                                           aObject,
-                                           aIID,
-                                           someJsVal.address());
+  nsresult rv =
+    nsContentUtils::WrapNative(cx, scopeObj, aObject, aIID, &someJsVal);
   if (NS_FAILED(rv)) {
     return JSVAL_NULL;
   }
@@ -1436,7 +1434,7 @@ JS::Value StringToJsval(nsPIDOMWindow* aWindow, nsAString& aString)
     return JSVAL_NULL;
   }
 
-  JS::Value result = JSVAL_NULL;
+  JS::Rooted<JS::Value> result(cx);
   if (!xpc::StringToJsval(cx, aString, &result)) {
     return JSVAL_NULL;
   }
@@ -2154,7 +2152,7 @@ public:
 
       // because owner implements nsITabChild, we can assume that it is
       // the one and only TabChild.
-      TabChild* child = GetTabChildFrom(mWindow->GetDocShell());
+      TabChild* child = TabChild::GetFrom(mWindow->GetDocShell());
       if (!child) {
         return NS_OK;
       }
@@ -3173,7 +3171,7 @@ nsDOMDeviceStorage::EnumerateInternal(const nsAString& aPath,
   if (XRE_GetProcessType() == GeckoProcessType_Content) {
     // because owner implements nsITabChild, we can assume that it is
     // the one and only TabChild.
-    TabChild* child = GetTabChildFrom(win->GetDocShell());
+    TabChild* child = TabChild::GetFrom(win->GetDocShell());
     if (!child) {
       return cursor.forget();
     }
@@ -3351,7 +3349,7 @@ nsDOMDeviceStorage::AddEventListener(const nsAString & aType,
 
 void
 nsDOMDeviceStorage::AddEventListener(const nsAString & aType,
-                                     nsIDOMEventListener *aListener,
+                                     EventListener *aListener,
                                      bool aUseCapture,
                                      const Nullable<bool>& aWantsUntrusted,
                                      ErrorResult& aRv)
@@ -3407,7 +3405,7 @@ nsDOMDeviceStorage::RemoveEventListener(const nsAString & aType,
 
 void
 nsDOMDeviceStorage::RemoveEventListener(const nsAString& aType,
-                                        nsIDOMEventListener* aListener,
+                                        EventListener* aListener,
                                         bool aCapture,
                                         ErrorResult& aRv)
 {
@@ -3466,10 +3464,10 @@ nsDOMDeviceStorage::PostHandleEvent(nsEventChainPostVisitor & aVisitor)
 }
 
 nsresult
-nsDOMDeviceStorage::DispatchDOMEvent(nsEvent *aEvent,
-                                     nsIDOMEvent *aDOMEvent,
-                                     nsPresContext *aPresContext,
-                                     nsEventStatus *aEventStatus)
+nsDOMDeviceStorage::DispatchDOMEvent(WidgetEvent* aEvent,
+                                     nsIDOMEvent* aDOMEvent,
+                                     nsPresContext* aPresContext,
+                                     nsEventStatus* aEventStatus)
 {
   return nsDOMEventTargetHelper::DispatchDOMEvent(aEvent,
                                                   aDOMEvent,

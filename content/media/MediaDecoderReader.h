@@ -31,11 +31,8 @@ class TimeRanges;
 class VideoInfo {
 public:
   VideoInfo()
-    : mAudioRate(44100),
-      mAudioChannels(2),
-      mDisplay(0,0),
+    : mDisplay(0,0),
       mStereoMode(STEREO_MODE_MONO),
-      mHasAudio(false),
       mHasVideo(false)
   {}
 
@@ -47,12 +44,6 @@ public:
                                   const nsIntRect& aPicture,
                                   const nsIntSize& aDisplay);
 
-  // Sample rate.
-  uint32_t mAudioRate;
-
-  // Number of audio channels.
-  uint32_t mAudioChannels;
-
   // Size in pixels at which the video is rendered. This is after it has
   // been scaled by its aspect ratio.
   nsIntSize mDisplay;
@@ -60,11 +51,47 @@ public:
   // Indicates the frame layout for single track stereo videos.
   StereoMode mStereoMode;
 
-  // True if we have an active audio bitstream.
-  bool mHasAudio;
-
   // True if we have an active video bitstream.
   bool mHasVideo;
+};
+
+class AudioInfo {
+public:
+  AudioInfo()
+    : mRate(44100),
+      mChannels(2),
+      mHasAudio(false)
+  {}
+
+  // Sample rate.
+  uint32_t mRate;
+
+  // Number of audio channels.
+  uint32_t mChannels;
+
+  // True if we have an active audio bitstream.
+  bool mHasAudio;
+};
+
+class MediaInfo {
+public:
+  bool HasVideo() const
+  {
+    return mVideo.mHasVideo;
+  }
+
+  bool HasAudio() const
+  {
+    return mAudio.mHasAudio;
+  }
+
+  bool HasValidMedia() const
+  {
+    return HasVideo() || HasAudio();
+  }
+
+  VideoInfo mVideo;
+  AudioInfo mAudio;
 };
 
 // Holds chunk a decoded audio frames.
@@ -420,6 +447,8 @@ public:
   virtual bool IsDormantNeeded() { return false; }
   // Release media resources they should be released in dormant state
   virtual void ReleaseMediaResources() {};
+  // Release the decoder during shutdown
+  virtual void ReleaseDecoder() {};
 
   // Resets all state related to decoding, emptying all buffers etc.
   virtual nsresult ResetDecode();
@@ -448,7 +477,7 @@ public:
   // the data required to present the media, and optionally fills *aTags
   // with tag metadata from the file.
   // Returns NS_OK on success, or NS_ERROR_FAILURE on failure.
-  virtual nsresult ReadMetadata(VideoInfo* aInfo,
+  virtual nsresult ReadMetadata(MediaInfo* aInfo,
                                 MetadataTags** aTags) = 0;
 
   // Stores the presentation time of the first frame we'd be able to play if
@@ -496,9 +525,21 @@ public:
   // Populates aBuffered with the time ranges which are buffered. aStartTime
   // must be the presentation time of the first frame in the media, e.g.
   // the media time corresponding to playback time/position 0. This function
-  // should only be called on the main thread.
+  // is called on the main, decode, and state machine threads.
+  //
+  // This base implementation in MediaDecoderReader estimates the time ranges
+  // buffered by interpolating the cached byte ranges with the duration
+  // of the media. Reader subclasses should override this method if they
+  // can quickly calculate the buffered ranges more accurately.
+  //
+  // The primary advantage of this implementation in the reader base class
+  // is that it's a fast approximation, which does not perform any I/O.
+  //
+  // The OggReader relies on this base implementation not performing I/O,
+  // since in FirefoxOS we can't do I/O on the main thread, where this is
+  // called.
   virtual nsresult GetBuffered(dom::TimeRanges* aBuffered,
-                               int64_t aStartTime) = 0;
+                               int64_t aStartTime);
 
   class VideoQueueMemoryFunctor : public nsDequeFunctor {
   public:
@@ -558,7 +599,7 @@ protected:
   AbstractMediaDecoder* mDecoder;
 
   // Stores presentation info required for playback.
-  VideoInfo mInfo;
+  MediaInfo mInfo;
 
   // Whether we should accept media that we know we can't play
   // directly, because they have a number of channel higher than

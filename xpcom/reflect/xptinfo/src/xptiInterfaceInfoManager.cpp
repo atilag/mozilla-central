@@ -35,16 +35,16 @@ XPTInterfaceInfoManager::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf)
     ReentrantMonitorAutoEnter monitor(mWorkingSet.mTableReentrantMonitor);
     // The entries themselves are allocated out of an arena accounted
     // for elsewhere, so don't measure them
-    n += mWorkingSet.mIIDTable.SizeOfExcludingThis(NULL, aMallocSizeOf);
-    n += mWorkingSet.mNameTable.SizeOfExcludingThis(NULL, aMallocSizeOf);
+    n += mWorkingSet.mIIDTable.SizeOfExcludingThis(nullptr, aMallocSizeOf);
+    n += mWorkingSet.mNameTable.SizeOfExcludingThis(nullptr, aMallocSizeOf);
     return n;
 }
 
-class XPTIWorkingSetReporter MOZ_FINAL : public MemoryReporterBase
+class XPTIWorkingSetReporter MOZ_FINAL : public MemoryUniReporter
 {
 public:
     XPTIWorkingSetReporter()
-      : MemoryReporterBase("explicit/xpti-working-set", KIND_HEAP, UNITS_BYTES,
+      : MemoryUniReporter("explicit/xpti-working-set", KIND_HEAP, UNITS_BYTES,
                            "Memory used by the XPCOM typelib system.")
     {}
 private:

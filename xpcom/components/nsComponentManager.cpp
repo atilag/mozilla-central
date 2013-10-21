@@ -280,11 +280,11 @@ CloneAndAppend(nsIFile* aBase, const nsACString& append)
 // nsComponentManagerImpl
 ////////////////////////////////////////////////////////////////////////////////
 
-class XPCOMComponentManagerReporter MOZ_FINAL : public MemoryReporterBase
+class XPCOMComponentManagerReporter MOZ_FINAL : public MemoryUniReporter
 {
 public:
     XPCOMComponentManagerReporter()
-      : MemoryReporterBase("explicit/xpcom/component-manager",
+      : MemoryUniReporter("explicit/xpcom/component-manager",
                            KIND_HEAP, UNITS_BYTES,
                            "Memory used for the XPCOM component manager.")
     {}
@@ -493,7 +493,7 @@ nsComponentManagerImpl::RegisterCIDEntryLocked(
             existing = f->mModule->Description();
         else
             existing = "<unknown module>";
-
+        SafeMutexAutoUnlock unlock(mLock);
         LogMessage("While registering XPCOM module %s, trying to re-register CID '%s' already registered by %s.",
                    aModule->Description().get(),
                    idstr,

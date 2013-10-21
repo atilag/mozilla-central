@@ -210,6 +210,7 @@ BrowserElementChild.prototype = {
       "owner-visibility-change": this._recvOwnerVisibilityChange,
       "exit-fullscreen": this._recvExitFullscreen.bind(this),
       "activate-next-paint-listener": this._activateNextPaintListener.bind(this),
+      "set-input-method-active": this._recvSetInputMethodActive.bind(this),
       "deactivate-next-paint-listener": this._deactivateNextPaintListener.bind(this)
     }
 
@@ -318,6 +319,8 @@ BrowserElementChild.prototype = {
     sendAsyncMsg('showmodalprompt', args);
 
     let returnValue = this._waitForResult(win);
+
+    Services.obs.notifyObservers(null, 'BEC:ShownModalPrompt', null);
 
     if (args.promptType == 'prompt' ||
         args.promptType == 'confirm' ||
@@ -447,8 +450,12 @@ BrowserElementChild.prototype = {
 
   _iconChangedHandler: function(e) {
     debug('Got iconchanged: (' + e.target.href + ')');
+    let icon = { href: e.target.href };
+    if (e.target.getAttribute('sizes')) {
+      icon.sizes = e.target.getAttribute('sizes');
+    }
 
-    sendAsyncMsg('iconchange', { _payload_: e.target.href });
+    sendAsyncMsg('iconchange', icon);
   },
 
   _openSearchHandler: function(e) {
@@ -884,6 +891,20 @@ BrowserElementChild.prototype = {
   _recvStop: function(data) {
     let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
     webNav.stop(webNav.STOP_NETWORK);
+  },
+
+  _recvSetInputMethodActive: function(data) {
+    let msgData = { id: data.json.id };
+    // Unwrap to access webpage content.
+    let nav = XPCNativeWrapper.unwrap(content.document.defaultView.navigator);
+    if (nav.mozInputMethod) {
+      // Wrap to access the chrome-only attribute setActive.
+      new XPCNativeWrapper(nav.mozInputMethod).setActive(data.json.args.isActive);
+      msgData.successRv = null;
+    } else {
+      msgData.errorMsg = 'Cannot access mozInputMethod.';
+    }
+    sendAsyncMsg('got-set-input-method-active', msgData);
   },
 
   _keyEventHandler: function(e) {

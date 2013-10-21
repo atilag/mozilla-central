@@ -9,6 +9,7 @@
 #include "nsIMobileConnectionProvider.h"
 #include "nsDOMEventTargetHelper.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsWeakPtr.h"
 
 namespace mozilla {
 namespace dom {
@@ -46,6 +47,8 @@ private:
   nsCOMPtr<nsIMobileConnectionProvider> mProvider;
   nsRefPtr<Listener> mListener;
   nsWeakPtr mWindow;
+
+  uint32_t mClientId;
 
   bool CheckPermission(const char* type);
 };

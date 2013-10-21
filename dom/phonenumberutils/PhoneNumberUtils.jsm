@@ -21,6 +21,9 @@ Cu.import("resource://gre/modules/mcc_iso3166_table.jsm");
 XPCOMUtils.defineLazyServiceGetter(this, "mobileConnection",
                                    "@mozilla.org/ril/content-helper;1",
                                    "nsIMobileConnectionProvider");
+XPCOMUtils.defineLazyServiceGetter(this, "icc",
+                                   "@mozilla.org/ril/content-helper;1",
+                                   "nsIIccProvider");
 #endif
 
 this.PhoneNumberUtils = {
@@ -41,13 +44,14 @@ this.PhoneNumberUtils = {
 
 #ifdef MOZ_B2G_RIL
     // Get network mcc
-    let voice = mobileConnection.voiceConnectionInfo;
+    // TODO: Bug 926740 - PhoneNumberUtils for multisim
+    let voice = mobileConnection.getVoiceConnectionInfo(0);
     if (voice && voice.network && voice.network.mcc) {
       mcc = voice.network.mcc;
     }
 
     // Get SIM mcc
-    let iccInfo = mobileConnection.iccInfo;
+    let iccInfo = icc.iccInfo;
     if (!mcc && iccInfo && iccInfo.mcc) {
       mcc = iccInfo.mcc;
     }

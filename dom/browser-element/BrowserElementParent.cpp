@@ -134,7 +134,7 @@ BrowserElementParent::DispatchOpenWindowEvent(Element* aOpenerFrameElement,
   // aFeatures.
 
   // Create the event's detail object.
-  OpenWindowEventDetailInitializer detail;
+  OpenWindowEventDetail detail;
   detail.mUrl = aURL;
   detail.mName = aName;
   detail.mFeatures = aFeatures;
@@ -302,15 +302,25 @@ private:
 NS_IMETHODIMP DispatchAsyncScrollEventRunnable::Run()
 {
   nsCOMPtr<Element> frameElement = mTabParent->GetOwnerElement();
+  NS_ENSURE_STATE(frameElement);
+  nsIDocument *doc = frameElement->OwnerDoc();
+  nsCOMPtr<nsIGlobalObject> globalObject = doc->GetScopeObject();
+  NS_ENSURE_TRUE(globalObject, NS_ERROR_UNEXPECTED);
+
   // Create the event's detail object.
-  AsyncScrollEventDetailInitializer detail;
+  AsyncScrollEventDetail detail;
   detail.mLeft = mContentRect.x;
   detail.mTop = mContentRect.y;
   detail.mWidth = mContentRect.width;
   detail.mHeight = mContentRect.height;
   detail.mScrollWidth = mContentRect.width;
   detail.mScrollHeight = mContentRect.height;
+
   AutoSafeJSContext cx;
+  JS::Rooted<JSObject*> globalJSObject(cx, globalObject->GetGlobalJSObject());
+  NS_ENSURE_TRUE(globalJSObject, NS_ERROR_UNEXPECTED);
+
+  JSAutoCompartment ac(cx, globalJSObject);
   JS::Rooted<JS::Value> val(cx);
 
   // We can get away with a null global here because

@@ -7,6 +7,7 @@
 // nsIDOMMozVoicemailStatus
 interface MozVoicemailStatus;
 
+[Pref="dom.voicemail.enabled"]
 interface MozVoicemail : EventTarget
 {
   /**
@@ -31,6 +32,5 @@ interface MozVoicemail : EventTarget
   /**
    * The current voicemail status has changed
    */
-  [SetterThrows]
   attribute EventHandler onstatuschanged;
 };

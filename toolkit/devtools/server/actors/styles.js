@@ -11,6 +11,7 @@ const events = require("sdk/event/core");
 const object = require("sdk/util/object");
 const { Class } = require("sdk/core/heritage");
 
+loader.lazyImporter(this, "Services", "resource://gre/modules/Services.jsm");
 loader.lazyGetter(this, "CssLogic", () => require("devtools/styleinspector/css-logic").CssLogic);
 loader.lazyGetter(this, "DOMUtils", () => Cc["@mozilla.org/inspector/dom-utils;1"].getService(Ci.inIDOMUtils));
 
@@ -135,12 +136,11 @@ var PageStyleActor = protocol.ActorClass({
    *   }
    */
   getComputed: method(function(node, options) {
-    let win = node.rawNode.ownerDocument.defaultView;
     let ret = Object.create(null);
 
     this.cssLogic.sourceFilter = options.filter || CssLogic.FILTER.UA;
     this.cssLogic.highlight(node.rawNode);
-    let computed = this.cssLogic._computedStyle;
+    let computed = this.cssLogic._computedStyle || [];
 
     Array.prototype.forEach.call(computed, name => {
       let matched = undefined;
@@ -232,6 +232,7 @@ var PageStyleActor = protocol.ActorClass({
         rule: rule,
         sourceText: this.getSelectorSource(selectorInfo, node.rawNode),
         selector: selectorInfo.selector.text,
+        name: selectorInfo.property,
         value: selectorInfo.value,
         status: selectorInfo.status
       });
@@ -243,7 +244,7 @@ var PageStyleActor = protocol.ActorClass({
       matched: matched,
       rules: [...rules],
       sheets: [...sheets],
-    }
+    };
   }, {
     request: {
       node: Arg(0, "domnode"),
@@ -563,6 +564,14 @@ var StyleSheetActor = protocol.ActorClass({
       return this.actorID;
     }
 
+    let href;
+    if (this.rawSheet.ownerNode) {
+      if (this.rawSheet.ownerNode instanceof Ci.nsIDOMHTMLDocument)
+        href = this.rawSheet.ownerNode.location.href;
+      if (this.rawSheet.ownerNode.ownerDocument)
+        href = this.rawSheet.ownerNode.ownerDocument.location.href;
+    }
+
     return {
       actor: this.actorID,
 
@@ -571,7 +580,7 @@ var StyleSheetActor = protocol.ActorClass({
 
       // nodeHref stores the URI of the document that
       // included the sheet.
-      nodeHref: this.rawSheet.ownerNode ? this.rawSheet.ownerNode.ownerDocument.location.href : undefined,
+      nodeHref: href,
 
       system: !CssLogic.isContentStylesheet(this.rawSheet),
       disabled: this.rawSheet.disabled ? true : undefined
@@ -710,13 +719,34 @@ var StyleRuleActor = protocol.ActorClass({
    * @returns the rule with updated properties
    */
   modifyProperties: method(function(modifications) {
+    let validProps = new Map();
+
+    // Use a fresh element for each call to this function to prevent side effects
+    // that pop up based on property values that were already set on the element.
+
+    let document;
+    if (this.rawNode) {
+      document = this.rawNode.ownerDocument;
+    } else {
+      if (this.rawRule.parentStyleSheet.ownerNode instanceof Ci.nsIDOMHTMLDocument) {
+        document = this.rawRule.parentStyleSheet.ownerNode;
+      } else {
+        document = this.rawRule.parentStyleSheet.ownerNode.ownerDocument;
+      }
+    }
+
+    let tempElement = document.createElement("div");
+
     for (let mod of modifications) {
       if (mod.type === "set") {
-        this.rawStyle.setProperty(mod.name, mod.value, mod.priority || "");
+        tempElement.style.setProperty(mod.name, mod.value, mod.priority || "");
+        this.rawStyle.setProperty(mod.name,
+          tempElement.style.getPropertyValue(mod.name), mod.priority || "");
       } else if (mod.type === "remove") {
         this.rawStyle.removeProperty(mod.name);
       }
     }
+
     return this;
   }, {
     request: { modifications: Arg(0, "array:json") },

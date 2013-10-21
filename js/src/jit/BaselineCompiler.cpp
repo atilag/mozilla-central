@@ -12,7 +12,9 @@
 #include "jit/FixedList.h"
 #include "jit/IonLinker.h"
 #include "jit/IonSpewer.h"
-#include "jit/PerfSpewer.h"
+#ifdef JS_ION_PERF
+# include "jit/PerfSpewer.h"
+#endif
 #include "jit/VMFunctions.h"
 
 #include "jsscriptinlines.h"
@@ -68,6 +70,9 @@ BaselineCompiler::compile()
 {
     IonSpew(IonSpew_BaselineScripts, "Baseline compiling script %s:%d (%p)",
             script->filename(), script->lineno, script.get());
+
+    IonSpew(IonSpew_Codegen, "# Emitting baseline code for script %s:%d",
+            script->filename(), script->lineno);
 
     if (cx->typeInferenceEnabled() && !script->ensureHasBytecodeTypeMap(cx))
         return Method_Error;
@@ -190,8 +195,8 @@ BaselineCompiler::compile()
         size_t icEntry = icLoadLabels_[i].icEntry;
         ICEntry *entryAddr = &(baselineScript->icEntry(icEntry));
         Assembler::patchDataWithValueCheck(CodeLocationLabel(code, label),
-                                           ImmWord(uintptr_t(entryAddr)),
-                                           ImmWord(uintptr_t(-1)));
+                                           ImmPtr(entryAddr),
+                                           ImmPtr((void*)-1));
     }
 
     if (modifiesArguments_)
@@ -233,10 +238,10 @@ BaselineCompiler::emitPrologue()
     // Handle scope chain pre-initialization (in case GC gets run
     // during stack check).  For global and eval scripts, the scope
     // chain is in R1.  For function scripts, the scope chain is in
-    // the callee, NULL is stored for now so that GC doesn't choke on
-    // a bogus ScopeChain value in the frame.
+    // the callee, nullptr is stored for now so that GC doesn't choke
+    // on a bogus ScopeChain value in the frame.
     if (function())
-        masm.storePtr(ImmWord((uintptr_t)0), frame.addressOfScopeChain());
+        masm.storePtr(ImmPtr(nullptr), frame.addressOfScopeChain());
     else
         masm.storePtr(R1.scratchReg(), frame.addressOfScopeChain());
 
@@ -345,7 +350,7 @@ BaselineCompiler::emitOutOfLinePostBarrierSlot()
 #endif
 
     masm.setupUnalignedABICall(2, scratch);
-    masm.movePtr(ImmWord(cx->runtime()), scratch);
+    masm.movePtr(ImmPtr(cx->runtime()), scratch);
     masm.passABIArg(scratch);
     masm.passABIArg(objReg);
     masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, PostWriteBarrier));
@@ -527,7 +532,7 @@ BaselineCompiler::emitUseCountIncrement()
 
     masm.branchPtr(Assembler::Equal,
                    Address(scriptReg, JSScript::offsetOfIonScript()),
-                   ImmWord(ION_COMPILING_SCRIPT), &skipCall);
+                   ImmPtr(ION_COMPILING_SCRIPT), &skipCall);
 
     // Call IC.
     ICUseCount_Fallback::Compiler stubCompiler(cx);
@@ -968,8 +973,8 @@ BaselineCompiler::emit_JSOP_THIS()
     // Keep this value in R0
     frame.pushThis();
 
-    // In strict mode function or self-hosted function, |this| is left alone.
-    if (!function() || function()->strict() || function()->isSelfHostedBuiltin())
+    // In strict mode code or self-hosted functions, |this| is left alone.
+    if (script->strict || (function() && function()->isSelfHostedBuiltin()))
         return true;
 
     Label skipIC;
@@ -1378,7 +1383,7 @@ BaselineCompiler::emit_JSOP_NEWARRAY()
 
     uint32_t length = GET_UINT24(pc);
     RootedTypeObject type(cx);
-    if (!types::UseNewTypeForInitializer(cx, script, pc, JSProto_Array)) {
+    if (!types::UseNewTypeForInitializer(script, pc, JSProto_Array)) {
         type = types::TypeScript::InitObject(cx, script, pc, JSProto_Array);
         if (!type)
             return false;
@@ -1388,7 +1393,12 @@ BaselineCompiler::emit_JSOP_NEWARRAY()
     masm.move32(Imm32(length), R0.scratchReg());
     masm.movePtr(ImmGCPtr(type), R1.scratchReg());
 
-    ICNewArray_Fallback::Compiler stubCompiler(cx);
+    JSObject *templateObject = NewDenseUnallocatedArray(cx, length, nullptr, TenuredObject);
+    if (!templateObject)
+        return false;
+    templateObject->setType(type);
+
+    ICNewArray_Fallback::Compiler stubCompiler(cx, templateObject);
     if (!emitOpIC(stubCompiler.getStub(&stubSpace_)))
         return false;
 
@@ -1422,7 +1432,7 @@ BaselineCompiler::emit_JSOP_NEWOBJECT()
     frame.syncStack(0);
 
     RootedTypeObject type(cx);
-    if (!types::UseNewTypeForInitializer(cx, script, pc, JSProto_Object)) {
+    if (!types::UseNewTypeForInitializer(script, pc, JSProto_Object)) {
         type = types::TypeScript::InitObject(cx, script, pc, JSProto_Object);
         if (!type)
             return false;
@@ -1440,10 +1450,7 @@ BaselineCompiler::emit_JSOP_NEWOBJECT()
             return false;
     }
 
-    // Pass base object in R0.
-    masm.movePtr(ImmGCPtr(templateObject), R0.scratchReg());
-
-    ICNewObject_Fallback::Compiler stubCompiler(cx);
+    ICNewObject_Fallback::Compiler stubCompiler(cx, templateObject);
     if (!emitOpIC(stubCompiler.getStub(&stubSpace_)))
         return false;
 
@@ -1458,7 +1465,7 @@ BaselineCompiler::emit_JSOP_NEWINIT()
     JSProtoKey key = JSProtoKey(GET_UINT8(pc));
 
     RootedTypeObject type(cx);
-    if (!types::UseNewTypeForInitializer(cx, script, pc, key)) {
+    if (!types::UseNewTypeForInitializer(script, pc, key)) {
         type = types::TypeScript::InitObject(cx, script, pc, key);
         if (!type)
             return false;
@@ -1469,7 +1476,12 @@ BaselineCompiler::emit_JSOP_NEWINIT()
         masm.move32(Imm32(0), R0.scratchReg());
         masm.movePtr(ImmGCPtr(type), R1.scratchReg());
 
-        ICNewArray_Fallback::Compiler stubCompiler(cx);
+        JSObject *templateObject = NewDenseUnallocatedArray(cx, 0, nullptr, TenuredObject);
+        if (!templateObject)
+            return false;
+        templateObject->setType(type);
+
+        ICNewArray_Fallback::Compiler stubCompiler(cx, templateObject);
         if (!emitOpIC(stubCompiler.getStub(&stubSpace_)))
             return false;
     } else {
@@ -1487,10 +1499,7 @@ BaselineCompiler::emit_JSOP_NEWINIT()
                 return false;
         }
 
-        // Pass base object in R0.
-        masm.movePtr(ImmGCPtr(templateObject), R0.scratchReg());
-
-        ICNewObject_Fallback::Compiler stubCompiler(cx);
+        ICNewObject_Fallback::Compiler stubCompiler(cx, templateObject);
         if (!emitOpIC(stubCompiler.getStub(&stubSpace_)))
             return false;
     }
@@ -1820,7 +1829,7 @@ BaselineCompiler::emit_JSOP_GETALIASEDVAR()
     Address address = getScopeCoordinateAddress(R0.scratchReg());
     masm.loadValue(address, R0);
 
-    ICTypeMonitor_Fallback::Compiler compiler(cx, (ICMonitoredFallbackStub *) NULL);
+    ICTypeMonitor_Fallback::Compiler compiler(cx, (ICMonitoredFallbackStub *) nullptr);
     if (!emitOpIC(compiler.getStub(&stubSpace_)))
         return false;
 
@@ -2067,7 +2076,7 @@ BaselineCompiler::emitInitPropGetterSetter()
     pushArg(R0.scratchReg());
     pushArg(ImmGCPtr(script->getName(pc)));
     pushArg(R1.scratchReg());
-    pushArg(ImmWord(pc));
+    pushArg(ImmPtr(pc));
 
     if (!callVM(InitPropGetterSetterInfo))
         return false;
@@ -2111,7 +2120,7 @@ BaselineCompiler::emitInitElemGetterSetter()
     pushArg(R0);
     masm.extractObject(frame.addressOfStackValue(frame.peek(-3)), R0.scratchReg());
     pushArg(R0.scratchReg());
-    pushArg(ImmWord(pc));
+    pushArg(ImmPtr(pc));
 
     if (!callVM(InitElemGetterSetterInfo))
         return false;
@@ -2252,7 +2261,7 @@ BaselineCompiler::emitCall()
     uint32_t argc = GET_ARGC(pc);
 
     frame.syncStack(0);
-    masm.mov(Imm32(argc), R0.scratchReg());
+    masm.mov(ImmWord(argc), R0.scratchReg());
 
     // Call IC
     ICCall_Fallback::Compiler stubCompiler(cx, /* isConstructing = */ JSOp(*pc) == JSOP_NEW);
@@ -2464,6 +2473,12 @@ BaselineCompiler::emit_JSOP_ENTERLET1()
     return emitEnterBlock();
 }
 
+bool
+BaselineCompiler::emit_JSOP_ENTERLET2()
+{
+    return emitEnterBlock();
+}
+
 typedef bool (*LeaveBlockFn)(JSContext *, BaselineFrame *);
 static const VMFunction LeaveBlockInfo = FunctionInfo<LeaveBlockFn>(jit::LeaveBlock);
 
@@ -2538,7 +2553,7 @@ bool
 BaselineCompiler::emit_JSOP_DEBUGGER()
 {
     prepareVMCall();
-    pushArg(ImmWord(pc));
+    pushArg(ImmPtr(pc));
 
     masm.loadBaselineFramePtr(BaselineFrameReg, R0.scratchReg());
     pushArg(R0.scratchReg());
@@ -2645,7 +2660,7 @@ BaselineCompiler::emit_JSOP_TOID()
 
     pushArg(R0);
     pushArg(R1);
-    pushArg(ImmWord(pc));
+    pushArg(ImmPtr(pc));
     pushArg(ImmGCPtr(script));
 
     if (!callVM(ToIdInfo))
@@ -2809,7 +2824,7 @@ DoCreateRestParameter(JSContext *cx, BaselineFrame *frame, MutableHandleValue re
     unsigned numRest = numActuals > numFormals ? numActuals - numFormals : 0;
     Value *rest = frame->argv() + numFormals;
 
-    JSObject *obj = NewDenseCopiedArray(cx, numRest, rest, NULL);
+    JSObject *obj = NewDenseCopiedArray(cx, numRest, rest, nullptr);
     if (!obj)
         return false;
     types::FixRestArgumentsType(cx, obj);

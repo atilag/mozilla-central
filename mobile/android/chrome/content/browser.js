@@ -18,6 +18,7 @@ Cu.import("resource://gre/modules/JNI.jsm");
 Cu.import('resource://gre/modules/Payment.jsm');
 Cu.import("resource://gre/modules/PermissionPromptHelper.jsm");
 Cu.import("resource://gre/modules/ContactService.jsm");
+Cu.import("resource://gre/modules/SpatialNavigation.jsm");
 
 #ifdef ACCESSIBILITY
 Cu.import("resource://gre/modules/accessibility/AccessFu.jsm");
@@ -52,6 +53,9 @@ XPCOMUtils.defineLazyModuleGetter(this, "Sanitizer",
 XPCOMUtils.defineLazyModuleGetter(this, "Prompt",
                                   "resource://gre/modules/Prompt.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "HelperApps",
+                                  "resource://gre/modules/HelperApps.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "FormHistory",
                                   "resource://gre/modules/FormHistory.jsm");
 
@@ -61,7 +65,6 @@ XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
 
 // Lazily-loaded browser scripts:
 [
-  ["HelperApps", "chrome://browser/content/HelperApps.js"],
   ["SelectHelper", "chrome://browser/content/SelectHelper.js"],
   ["InputWidgetHelper", "chrome://browser/content/InputWidgetHelper.js"],
   ["AboutReader", "chrome://browser/content/aboutReader.js"],
@@ -279,10 +282,7 @@ var BrowserApp = {
     Services.obs.addObserver(this, "Session:Stop", false);
     Services.obs.addObserver(this, "SaveAs:PDF", false);
     Services.obs.addObserver(this, "Browser:Quit", false);
-    Services.obs.addObserver(this, "Preferences:Get", false);
     Services.obs.addObserver(this, "Preferences:Set", false);
-    Services.obs.addObserver(this, "Preferences:Observe", false);
-    Services.obs.addObserver(this, "Preferences:RemoveObservers", false);
     Services.obs.addObserver(this, "ScrollTo:FocusedInput", false);
     Services.obs.addObserver(this, "Sanitize:ClearData", false);
     Services.obs.addObserver(this, "FullScreen:Exit", false);
@@ -922,7 +922,7 @@ var BrowserApp = {
     let e = Services.wm.getEnumerator("navigator:browser");
     while (e.hasMoreElements() && lastBrowser) {
       let win = e.getNext();
-      if (win != window)
+      if (!win.closed && win != window)
         lastBrowser = false;
     }
 
@@ -993,16 +993,17 @@ var BrowserApp = {
 
   notifyPrefObservers: function(aPref) {
     this._prefObservers[aPref].forEach(function(aRequestId) {
-      let request = { requestId : aRequestId,
-                      preferences : [aPref] };
-      this.getPreferences(request);
+      this.getPreferences(aRequestId, [aPref], 1);
     }, this);
   },
 
-  getPreferences: function getPreferences(aPrefsRequest, aListen) {
+  handlePreferencesRequest: function handlePreferencesRequest(aRequestId,
+                                                              aPrefNames,
+                                                              aListen) {
+
     let prefs = [];
 
-    for (let prefName of aPrefsRequest.preferences) {
+    for (let prefName of aPrefNames) {
       let pref = {
         name: prefName,
         type: "",
@@ -1011,9 +1012,9 @@ var BrowserApp = {
 
       if (aListen) {
         if (this._prefObservers[prefName])
-          this._prefObservers[prefName].push(aPrefsRequest.requestId);
+          this._prefObservers[prefName].push(aRequestId);
         else
-          this._prefObservers[prefName] = [ aPrefsRequest.requestId ];
+          this._prefObservers[prefName] = [ aRequestId ];
         Services.prefs.addObserver(prefName, this, false);
       }
 
@@ -1120,29 +1121,9 @@ var BrowserApp = {
 
     sendMessageToJava({
       type: "Preferences:Data",
-      requestId: aPrefsRequest.requestId,    // opaque request identifier, can be any string/int/whatever
+      requestId: aRequestId,    // opaque request identifier, can be any string/int/whatever
       preferences: prefs
     });
-  },
-
-  removePreferenceObservers: function removePreferenceObservers(aRequestId) {
-    let newPrefObservers = [];
-    for (let prefName in this._prefObservers) {
-      let requestIds = this._prefObservers[prefName];
-      // Remove the requestID from the preference handlers
-      let i = requestIds.indexOf(aRequestId);
-      if (i >= 0) {
-        requestIds.splice(i, 1);
-      }
-
-      // If there are no more request IDs, remove the observer
-      if (requestIds.length == 0) {
-        Services.prefs.removeObserver(prefName, this);
-      } else {
-        newPrefObservers[prefName] = requestIds;
-      }
-    }
-    this._prefObservers = newPrefObservers;
   },
 
   setPreferences: function setPreferences(aPref) {
@@ -1339,17 +1320,24 @@ var BrowserApp = {
         break;
 
       case "Session:Reload": {
-        let allowMixedContent = false;
+        let flags = Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_PROXY | Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE;
+
+        // Check to see if this is a message to enable/disable mixed content blocking.
         if (aData) {
-            let data = JSON.parse(aData);
-            allowMixedContent = data.allowMixedContent;
+          let allowMixedContent = JSON.parse(aData).allowMixedContent;
+          if (allowMixedContent) {
+            // Set a flag to disable mixed content blocking.
+            flags = Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_MIXED_CONTENT;
+          } else {
+            // Set mixedContentChannel to null to re-enable mixed content blocking.
+            let docShell = browser.webNavigation.QueryInterface(Ci.nsIDocShell);
+            docShell.mixedContentChannel = null;
+          }
         }
 
         // Try to use the session history to reload so that framesets are
         // handled properly. If the window has no session history, fall back
         // to using the web navigation's reload method.
-        let flags = allowMixedContent ? Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_MIXED_CONTENT :
-                    Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_PROXY | Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE;
         let webNav = browser.webNavigation;
         try {
           let sh = webNav.sessionHistory;
@@ -1424,7 +1412,9 @@ var BrowserApp = {
         break;
 
       case "keyword-search":
-        // This assumes that the user can only perform a keyword search on the selected tab.
+        // This event refers to a search via the URL bar, not a bookmarks
+        // keyword search. Note that this code assumes that the user can only
+        // perform a keyword search on the selected tab.
         this.selectedTab.userSearch = aData;
 
         let engine = aSubject.QueryInterface(Ci.nsISearchEngine);
@@ -1443,20 +1433,8 @@ var BrowserApp = {
         this.saveAsPDF(browser);
         break;
 
-      case "Preferences:Get":
-        this.getPreferences(JSON.parse(aData));
-        break;
-
       case "Preferences:Set":
         this.setPreferences(aData);
-        break;
-
-      case "Preferences:Observe":
-        this.getPreferences(JSON.parse(aData), true);
-        break;
-
-      case "Preferences:RemoveObservers":
-        this.removePreferenceObservers(aData);
         break;
 
       case "ScrollTo:FocusedInput":
@@ -1530,6 +1508,34 @@ var BrowserApp = {
   // nsIAndroidBrowserApp
   getBrowserTab: function(tabId) {
     return this.getTabForId(tabId);
+  },
+
+  getPreferences: function getPreferences(requestId, prefNames, count) {
+    this.handlePreferencesRequest(requestId, prefNames, false);
+  },
+
+  observePreferences: function observePreferences(requestId, prefNames, count) {
+    this.handlePreferencesRequest(requestId, prefNames, true);
+  },
+
+  removePreferenceObservers: function removePreferenceObservers(aRequestId) {
+    let newPrefObservers = [];
+    for (let prefName in this._prefObservers) {
+      let requestIds = this._prefObservers[prefName];
+      // Remove the requestID from the preference handlers
+      let i = requestIds.indexOf(aRequestId);
+      if (i >= 0) {
+        requestIds.splice(i, 1);
+      }
+
+      // If there are no more request IDs, remove the observer
+      if (requestIds.length == 0) {
+        Services.prefs.removeObserver(prefName, this);
+      } else {
+        newPrefObservers[prefName] = requestIds;
+      }
+    }
+    this._prefObservers = newPrefObservers;
   },
 
   // This method will print a list from fromIndex to toIndex, optionally
@@ -2419,8 +2425,13 @@ var DesktopUserAgent = {
 
   _getWindowForRequest: function ua_getWindowForRequest(aRequest) {
     let loadContext = this._getRequestLoadContext(aRequest);
-    if (loadContext)
-      return loadContext.associatedWindow;
+    if (loadContext) {
+      try {
+        return loadContext.associatedWindow;
+      } catch (e) {
+        // loadContext.associatedWindow can throw when there's no window
+      }
+    }
     return null;
   },
 
@@ -2864,7 +2875,7 @@ Tab.prototype = {
       this.browser.focus();
       this.browser.docShellIsActive = true;
       Reader.updatePageAction(this);
-      HelperApps.updatePageAction(this.browser.currentURI);
+      ExternalApps.updatePageAction(this.browser.currentURI);
     } else {
       this.browser.setAttribute("type", "content-targetable");
       this.browser.docShellIsActive = false;
@@ -3381,8 +3392,16 @@ Tab.prototype = {
           this.browser.addEventListener("pagehide", listener, true);
         }
 
-        if (docURI.startsWith("about:reader"))
-          new AboutReader(this.browser.contentDocument, this.browser.contentWindow);
+        if (docURI.startsWith("about:reader")) {
+          // During browser restart / recovery, duplicate "DOMContentLoaded" messages are received here
+          // For the visible tab ... where more than one tab is being reloaded, the inital "DOMContentLoaded"
+          // Message can be received before the document body is available ... so we avoid instantiating an
+          // AboutReader object, expecting that an eventual valid message will follow.
+          let contentDocument = this.browser.contentDocument;
+          if (contentDocument.body) {
+            new AboutReader(contentDocument, this.browser.contentWindow);
+          }
+        }
 
         break;
       }
@@ -3565,7 +3584,8 @@ Tab.prototype = {
         }
 
         // Show page actions for helper apps.
-        HelperApps.updatePageAction(this.browser.currentURI);
+        if (BrowserApp.selectedTab == this)
+          ExternalApps.updatePageAction(this.browser.currentURI);
 
         if (!Reader.isEnabledForParseOnLoad)
           return;
@@ -4108,6 +4128,9 @@ var BrowserEventHandler = {
     BrowserApp.deck.addEventListener("touchstart", this, true);
     BrowserApp.deck.addEventListener("click", InputWidgetHelper, true);
     BrowserApp.deck.addEventListener("click", SelectHelper, true);
+
+    SpatialNavigation.init(BrowserApp.deck, null);
+
     document.addEventListener("MozMagnifyGesture", this, true);
 
     Services.prefs.addObserver("browser.zoom.reflowOnZoom", this, false);
@@ -4285,10 +4308,11 @@ var BrowserEventHandler = {
             this._sendMouseEvent("mousedown", element, x, y);
             this._sendMouseEvent("mouseup",   element, x, y);
 
-            // See if its a input element
-            if ((element instanceof HTMLInputElement && element.mozIsTextField(false)) ||
-                (element instanceof HTMLTextAreaElement))
-               SelectionHandler.attachCaret(element);
+            // See if its an input element, and it isn't disabled
+            if (!element.disabled &&
+                ((element instanceof HTMLInputElement && element.mozIsTextField(false)) ||
+                (element instanceof HTMLTextAreaElement)))
+              SelectionHandler.attachCaret(element);
 
             // scrollToFocusedInput does its own checks to find out if an element should be zoomed into
             BrowserApp.scrollToFocusedInput(BrowserApp.selectedBrowser);
@@ -4672,14 +4696,14 @@ const ElementTouchHelper = {
   anyElementFromPoint: function(aX, aY, aWindow) {
     let win = (aWindow ? aWindow : BrowserApp.selectedBrowser.contentWindow);
     let cwu = win.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils);
-    let elem = cwu.elementFromPoint(aX, aY, false, true);
+    let elem = cwu.elementFromPoint(aX, aY, true, true);
 
     while (elem && (elem instanceof HTMLIFrameElement || elem instanceof HTMLFrameElement)) {
       let rect = elem.getBoundingClientRect();
       aX -= rect.left;
       aY -= rect.top;
       cwu = elem.contentDocument.defaultView.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils);
-      elem = cwu.elementFromPoint(aX, aY, false, true);
+      elem = cwu.elementFromPoint(aX, aY, true, true);
     }
 
     return elem;
@@ -4961,13 +4985,9 @@ var ErrorPageEventHandler = {
                 Cu.reportError("Couldn't get malware report URL: " + e);
               }
             } else {
-              // It's a phishing site, not malware. (There's no report URL)
-              try {
-                let reportURL = formatter.formatURLPref("browser.safebrowsing.warning.infoURL");
-                BrowserApp.selectedBrowser.loadURI(reportURL);
-              } catch (e) {
-                Cu.reportError("Couldn't get phishing info URL: " + e);
-              }
+              // It's a phishing site, just link to the generic information page
+              let url = Services.urlFormatter.formatURLPref("app.support.baseURL");
+              BrowserApp.selectedBrowser.loadURI(url + "phishing-malware");
             }
           } else if (target == errorDoc.getElementById("ignoreWarningButton")) {
             Telemetry.addData("SECURITY_UI", nsISecTel[bucketName + "IGNORE_WARNING"]);
@@ -5142,10 +5162,16 @@ var FormAssistant = {
 
       // Reset invalid submit state on each pageshow
       case "pageshow":
-        let target = aEvent.originalTarget;
-        let selectedDocument = BrowserApp.selectedBrowser.contentDocument;
-        if (target == selectedDocument || target.ownerDocument == selectedDocument)
-          this._invalidSubmit = false;
+        if (!this._invalidSubmit)
+          return;
+
+        let selectedBrowser = BrowserApp.selectedBrowser;
+        if (selectedBrowser) {
+          let selectedDocument = selectedBrowser.contentDocument;
+          let target = aEvent.originalTarget;
+          if (target == selectedDocument || target.ownerDocument == selectedDocument)
+            this._invalidSubmit = false;
+        }
     }
   },
 
@@ -5304,7 +5330,10 @@ var FormAssistant = {
  * -- and reflect them back to Java.
  */
 let HealthReportStatusListener = {
-  TELEMETRY_PREF: 
+  PREF_ACCEPT_LANG: "intl.accept_languages",
+  PREF_BLOCKLIST_ENABLED: "extensions.blocklist.enabled",
+
+  PREF_TELEMETRY_ENABLED:
 #ifdef MOZ_TELEMETRY_REPORTING
     // Telemetry pref differs based on build.
 #ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
@@ -5323,18 +5352,21 @@ let HealthReportStatusListener = {
       console.log("Failed to initialize add-on status listener. FHR cannot report add-on state. " + ex);
     }
 
-    Services.obs.addObserver(this, "Addons:FetchAll", false);
-    Services.prefs.addObserver("extensions.blocklist.enabled", this, false);
-    if (this.TELEMETRY_PREF) {
-      Services.prefs.addObserver(this.TELEMETRY_PREF, this, false);
+    console.log("Adding HealthReport:RequestSnapshot observer.");
+    Services.obs.addObserver(this, "HealthReport:RequestSnapshot", false);
+    Services.prefs.addObserver(this.PREF_ACCEPT_LANG, this, false);
+    Services.prefs.addObserver(this.PREF_BLOCKLIST_ENABLED, this, false);
+    if (this.PREF_TELEMETRY_ENABLED) {
+      Services.prefs.addObserver(this.PREF_TELEMETRY_ENABLED, this, false);
     }
   },
 
   uninit: function () {
-    Services.obs.removeObserver(this, "Addons:FetchAll");
-    Services.prefs.removeObserver("extensions.blocklist.enabled", this);
-    if (this.TELEMETRY_PREF) {
-      Services.prefs.removeObserver(this.TELEMETRY_PREF, this);
+    Services.obs.removeObserver(this, "HealthReport:RequestSnapshot");
+    Services.prefs.removeObserver(this.PREF_ACCEPT_LANG, this);
+    Services.prefs.removeObserver(this.PREF_BLOCKLIST_ENABLED, this);
+    if (this.PREF_TELEMETRY_ENABLED) {
+      Services.prefs.removeObserver(this.PREF_TELEMETRY_ENABLED, this);
     }
 
     AddonManager.removeAddonListener(this);
@@ -5342,11 +5374,30 @@ let HealthReportStatusListener = {
 
   observe: function (aSubject, aTopic, aData) {
     switch (aTopic) {
-      case "Addons:FetchAll":
-        HealthReportStatusListener.sendAllAddonsToJava();
+      case "HealthReport:RequestSnapshot":
+        HealthReportStatusListener.sendSnapshotToJava();
         break;
       case "nsPref:changed":
-        sendMessageToJava({ type: "Pref:Change", pref: aData, value: Services.prefs.getBoolPref(aData) });
+        let response = {
+          type: "Pref:Change",
+          pref: aData,
+          isUserSet: Services.prefs.prefHasUserValue(aData),
+        };
+
+        switch (aData) {
+          case this.PREF_ACCEPT_LANG:
+            response.value = Services.prefs.getCharPref(aData);
+            break;
+          case this.PREF_TELEMETRY_ENABLED:
+          case this.PREF_BLOCKLIST_ENABLED:
+            response.value = Services.prefs.getBoolPref(aData);
+            break;
+          default:
+            console.log("Unexpected pref in HealthReportStatusListener: " + aData);
+            return;
+        }
+
+        sendMessageToJava(response);
         break;
     }
   },
@@ -5428,9 +5479,9 @@ let HealthReportStatusListener = {
     this.notifyJava(aAddon);
   },
 
-  sendAllAddonsToJava: function () {
+  sendSnapshotToJava: function () {
     AddonManager.getAllAddons(function (aAddons) {
-        let json = {};
+        let jsonA = {};
         if (aAddons) {
           for (let i = 0; i < aAddons.length; ++i) {
             let addon = aAddons[i];
@@ -5439,14 +5490,43 @@ let HealthReportStatusListener = {
               if (HealthReportStatusListener._shouldIgnore(addon)) {
                 addonJSON.ignore = true;
               }
-              json[addon.id] = addonJSON;
+              jsonA[addon.id] = addonJSON;
             } catch (e) {
               // Just skip this add-on.
             }
           }
         }
-        sendMessageToJava({ type: "Addons:All", json: json });
-      });
+
+        // Now add prefs.
+        let jsonP = {};
+        for (let pref of [this.PREF_BLOCKLIST_ENABLED, this.PREF_TELEMETRY_ENABLED]) {
+          if (!pref) {
+            // This will be the case for PREF_TELEMETRY_ENABLED in developer builds.
+            continue;
+          }
+          jsonP[pref] = {
+            pref: pref,
+            value: Services.prefs.getBoolPref(pref),
+            isUserSet: Services.prefs.prefHasUserValue(pref),
+          };
+        }
+        for (let pref of [this.PREF_ACCEPT_LANG]) {
+          jsonP[pref] = {
+            pref: pref,
+            value: Services.prefs.getCharPref(pref),
+            isUserSet: Services.prefs.prefHasUserValue(pref),
+          };
+        }
+
+        console.log("Sending snapshot message.");
+        sendMessageToJava({
+          type: "HealthReport:Snapshot",
+          json: {
+            addons: jsonA,
+            prefs: jsonP,
+          },
+        });
+      }.bind(this));
   },
 };
 
@@ -5658,8 +5738,11 @@ var ViewportHandler = {
   },
 
   updateMetadata: function updateMetadata(tab, aInitialLoad) {
-    let metadata = this.getViewportMetadata(tab.browser.contentWindow);
-    tab.updateViewportMetadata(metadata, aInitialLoad);
+    let contentWindow = tab.browser.contentWindow;
+    if (contentWindow.document.documentElement) {
+      let metadata = this.getViewportMetadata(contentWindow);
+      tab.updateViewportMetadata(metadata, aInitialLoad);
+    }
   },
 
   /**
@@ -6537,6 +6620,13 @@ var SearchEngines = {
         prompted: Services.prefs.getBoolPref(this.PREF_SUGGEST_PROMPTED)
       }
     });
+
+    // Send a speculative connection to the default engine.
+    let connector = Services.io.QueryInterface(Ci.nsISpeculativeConnect);
+    let searchURI = Services.search.defaultEngine.getSubmission("dummy").uri;
+    let callbacks = window.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIWebNavigation).QueryInterface(Ci.nsILoadContext);
+    connector.speculativeConnect(searchURI, callbacks);
   },
 
   _handleSearchEnginesGetAll: function _handleSearchEnginesGetAll(rv) {
@@ -7667,7 +7757,60 @@ var ExternalApps = {
   openExternal: function(aElement) {
     let uri = ExternalApps._getMediaLink(aElement);
     HelperApps.openUriInApp(uri);
-  }
+  },
+
+  updatePageAction: function updatePageAction(uri) {
+    let apps = HelperApps.getAppsForUri(uri);
+
+    if (apps.length > 0)
+      this._setUriForPageAction(uri, apps);
+    else
+      this._removePageAction();
+  },
+
+  _setUriForPageAction: function setUriForPageAction(uri, apps) {
+    this._pageActionUri = uri;
+
+    // If the pageaction is already added, simply update the URI to be launched when 'onclick' is triggered.
+    if (this._pageActionId != undefined)
+      return;
+
+    this._pageActionId = NativeWindow.pageactions.add({
+      title: Strings.browser.GetStringFromName("openInApp.pageAction"),
+      icon: "drawable://icon_openinapp",
+      clickCallback: (function() {
+        let callback = function(app) {
+          app.launch(uri);
+        }
+
+        if (apps.length > 1) {
+          // Use the HelperApps prompt here to filter out any Http handlers
+          HelperApps.prompt(apps, {
+            title: Strings.browser.GetStringFromName("openInApp.pageAction"),
+            buttons: [
+              Strings.browser.GetStringFromName("openInApp.ok"),
+              Strings.browser.GetStringFromName("openInApp.cancel")
+            ]
+          }, function(result) {
+            if (result.button != 0)
+              return;
+
+            callback(apps[result.icongrid0]);
+          });
+        } else {
+          callback(apps[0]);
+        }
+      }).bind(this)
+    });
+  },
+
+  _removePageAction: function removePageAction() {
+    if(!this._pageActionId)
+      return;
+
+    NativeWindow.pageactions.remove(this._pageActionId);
+    delete this._pageActionId;
+  },
 };
 
 var Distribution = {

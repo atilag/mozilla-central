@@ -5,7 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DOMWheelEvent.h"
-#include "nsGUIEvent.h"
+#include "mozilla/MouseEvents.h"
 #include "prtime.h"
 
 namespace mozilla {
@@ -13,10 +13,10 @@ namespace dom {
 
 DOMWheelEvent::DOMWheelEvent(EventTarget* aOwner,
                              nsPresContext* aPresContext,
-                             widget::WheelEvent* aWheelEvent)
+                             WidgetWheelEvent* aWheelEvent)
   : nsDOMMouseEvent(aOwner, aPresContext,
                     aWheelEvent ? aWheelEvent :
-                                  new widget::WheelEvent(false, 0, nullptr))
+                                  new WidgetWheelEvent(false, 0, nullptr))
 {
   if (aWheelEvent) {
     mEventIsInternal = false;
@@ -24,18 +24,8 @@ DOMWheelEvent::DOMWheelEvent(EventTarget* aOwner,
     mEventIsInternal = true;
     mEvent->time = PR_Now();
     mEvent->refPoint.x = mEvent->refPoint.y = 0;
-    static_cast<widget::WheelEvent*>(mEvent)->inputSource =
+    static_cast<WidgetWheelEvent*>(mEvent)->inputSource =
       nsIDOMMouseEvent::MOZ_SOURCE_UNKNOWN;
-  }
-}
-
-DOMWheelEvent::~DOMWheelEvent()
-{
-  if (mEventIsInternal && mEvent) {
-    MOZ_ASSERT(mEvent->eventStructType == NS_WHEEL_EVENT,
-               "The mEvent must be WheelEvent");
-    delete static_cast<widget::WheelEvent*>(mEvent);
-    mEvent = nullptr;
   }
 }
 
@@ -71,7 +61,7 @@ DOMWheelEvent::InitWheelEvent(const nsAString & aType,
                                     aRelatedTarget, aModifiersList);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  widget::WheelEvent* wheelEvent = static_cast<widget::WheelEvent*>(mEvent);
+  WidgetWheelEvent* wheelEvent = static_cast<WidgetWheelEvent*>(mEvent);
   wheelEvent->deltaX = aDeltaX;
   wheelEvent->deltaY = aDeltaY;
   wheelEvent->deltaZ = aDeltaZ;
@@ -163,7 +153,7 @@ DOMWheelEvent::Constructor(const GlobalObject& aGlobal,
                           aParam.mButton, aParam.mRelatedTarget,
                           modifierList, aParam.mDeltaX,
                           aParam.mDeltaY, aParam.mDeltaZ, aParam.mDeltaMode);
-  static_cast<widget::WheelEvent*>(e->mEvent)->buttons = aParam.mButtons;
+  static_cast<WidgetWheelEvent*>(e->mEvent)->buttons = aParam.mButtons;
   e->SetTrusted(trusted);
   return e.forget();
 }
@@ -176,7 +166,7 @@ using namespace mozilla;
 nsresult NS_NewDOMWheelEvent(nsIDOMEvent** aInstancePtrResult,
                              mozilla::dom::EventTarget* aOwner,
                              nsPresContext* aPresContext,
-                             widget::WheelEvent *aEvent)
+                             WidgetWheelEvent* aEvent)
 {
   dom::DOMWheelEvent* it = new dom::DOMWheelEvent(aOwner, aPresContext, aEvent);
   return CallQueryInterface(it, aInstancePtrResult);

@@ -48,27 +48,21 @@ interface BluetoothAdapter : EventTarget {
   [GetterThrows]
   readonly attribute any            uuids;
 
-  [SetterThrows]
            attribute EventHandler   ondevicefound;
 
   // Fired when pairing process is completed
-  [SetterThrows]
            attribute EventHandler   onpairedstatuschanged;
 
   // Fired when a2dp connection status changed
-  [SetterThrows]
            attribute EventHandler   ona2dpstatuschanged;
 
   // Fired when handsfree connection status changed
-  [SetterThrows]
            attribute EventHandler   onhfpstatuschanged;
 
   // Fired when sco connection status changed
-  [SetterThrows]
            attribute EventHandler   onscostatuschanged;
 
   // Fired when remote devices query current media play status
-  [SetterThrows]
            attribute EventHandler   onrequestmediaplaystatus;
 
   [Creator, Throws]
@@ -106,6 +100,10 @@ interface BluetoothAdapter : EventTarget {
    * device (CoD). If it isn't passed when calling Disconnect, all connected
    * profiles are going to be closed.
    *
+   * Reply success if the connection of any profile is successfully
+   * established/released; reply error if we failed to connect/disconnect all
+   * of the planned profiles.
+   *
    * @param device Remote device
    * @param profile 2-octets service UUID. This is optional.
    */
@@ -130,6 +128,23 @@ interface BluetoothAdapter : EventTarget {
   DOMRequest disconnectSco();
   [Creator, Throws]
   DOMRequest isScoConnected();
+
+  /**
+   * Additional HFP methods to handle CDMA network.
+   *
+   * In GSM network we observe call operations from RIL call state changes;
+   * however in CDMA network RIL call states do not change under some call
+   * operations, so we need these additional methods to be informed of these
+   * operations from dialer.
+   *
+   * For more information please refer to bug 912005 and 925638.
+   */
+  [Creator, Throws]
+  DOMRequest answerWaitingCall();
+  [Creator, Throws]
+  DOMRequest ignoreWaitingCall();
+  [Creator, Throws]
+  DOMRequest toggleCalls();
 
   // AVRCP 1.3 methods
   [Creator,Throws]

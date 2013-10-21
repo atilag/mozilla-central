@@ -405,8 +405,7 @@ typedef enum {
     SDP_USE_IN_BAND_FEC,
     SDP_MAX_CODED_AUDIO_BW,
     SDP_CBR,
-    SDP_STREAMS,
-    SDP_PROTOCOL,
+    SDP_MAX_FR,
     SDP_MAX_FMTP_PARAM,
     SDP_FMTP_PARAM_UNKNOWN
 } sdp_fmtp_codec_param_e;
@@ -474,51 +473,6 @@ typedef enum {
     SDP_RTCP_UNICAST_MODE_NOT_PRESENT
 } sdp_rtcp_unicast_mode_e;
 
-/* a=rtcp-fb enumerations */
-
-typedef enum {
-    SDP_RTCP_FB_ANY = -1,
-    SDP_RTCP_FB_ACK = 0,
-    SDP_RTCP_FB_CCM,
-    SDP_RTCP_FB_NACK,
-    SDP_RTCP_FB_TRR_INT,
-    SDP_MAX_RTCP_FB,
-    SDP_RTCP_FB_UNKNOWN
-} sdp_rtcp_fb_type_e;
-
-typedef enum {
-    SDP_RTCP_FB_NACK_NOT_FOUND = -1,
-    SDP_RTCP_FB_NACK_BASIC = 0,
-    SDP_RTCP_FB_NACK_SLI,
-    SDP_RTCP_FB_NACK_PLI,
-    SDP_RTCP_FB_NACK_RPSI,
-    SDP_RTCP_FB_NACK_APP,
-    SDP_RTCP_FB_NACK_RAI,
-    SDP_RTCP_FB_NACK_TLLEI,
-    SDP_RTCP_FB_NACK_PSLEI,
-    SDP_RTCP_FB_NACK_ECN,
-    SDP_MAX_RTCP_FB_NACK,
-    SDP_RTCP_FB_NACK_UNKNOWN
-} sdp_rtcp_fb_nack_type_e;
-
-typedef enum {
-    SDP_RTCP_FB_ACK_NOT_FOUND = -1,
-    SDP_RTCP_FB_ACK_RPSI = 0,
-    SDP_RTCP_FB_ACK_APP,
-    SDP_MAX_RTCP_FB_ACK,
-    SDP_RTCP_FB_ACK_UNKNOWN
-} sdp_rtcp_fb_ack_type_e;
-
-typedef enum {
-    SDP_RTCP_FB_CCM_NOT_FOUND = -1,
-    SDP_RTCP_FB_CCM_FIR = 0,
-    SDP_RTCP_FB_CCM_TMMBR,
-    SDP_RTCP_FB_CCM_TSTR,
-    SDP_RTCP_FB_CCM_VBCM,
-    SDP_MAX_RTCP_FB_CCM,
-    SDP_RTCP_FB_CCM_UNKNOWN
-} sdp_rtcp_fb_ccm_type_e;
-
 typedef enum {
     SDP_CONNECTION_NOT_FOUND = -1,
     SDP_CONNECTION_NEW = 0,
@@ -526,11 +480,6 @@ typedef enum {
     SDP_MAX_CONNECTION,
     SDP_CONNECTION_UNKNOWN
 } sdp_connection_type_e;
-
-#define SDP_RTCP_FB_NACK_TO_BITMAP(type) (1 << (type))
-#define SDP_RTCP_FB_ACK_TO_BITMAP(type)  (1 << (SDP_MAX_RTCP_FB_NACK + (type)))
-#define SDP_RTCP_FB_CCM_TO_BITMAP(type)  (1 << (SDP_MAX_RTCP_FB_NACK + \
-                                                SDP_MAX_RTCP_FB_ACK + (type)))
 
 /*
  * sdp_srtp_fec_order_t
@@ -693,10 +642,6 @@ typedef struct sdp_fmtp {
     char                      maxcodedaudiobandwidth[SDP_MAX_STRING_LEN+1];
     u16                       cbr;
 
-    /* some Data Channel specific fmtp params */
-    u16                       streams;   /* Num streams per Data Channel */
-    char                      protocol[SDP_MAX_STRING_LEN+1];
-
     /* BEGIN - All Video related FMTP parameters */
     u16                       qcif;
     u16                       cif;
@@ -736,6 +681,7 @@ typedef struct sdp_fmtp {
 
     u32                       max_mbps;
     u32                       max_fs;
+    u32                       max_fr;
     u32                       max_cpb;
     u32                       max_dpb;
     u32                       max_br;
@@ -764,6 +710,14 @@ typedef struct sdp_fmtp {
   /* END - All Video related FMTP parameters */
 
 } sdp_fmtp_t;
+
+/* a=sctpmap line used for Datachannels */
+typedef struct sdp_sctpmap {
+    u16                       port;
+    u32                       streams;   /* Num streams per Datachannel */
+    char                      protocol[SDP_MAX_STRING_LEN+1];
+} sdp_sctpmap_t;
+
 
 /* a=qos|secure|X-pc-qos|X-qos info */
 typedef struct sdp_qos {
@@ -1006,6 +960,7 @@ typedef struct sdp_attr {
         char                  string_val[SDP_MAX_STRING_LEN+1];
         char                  ice_attr[SDP_MAX_STRING_LEN+1];
         sdp_fmtp_t            fmtp;
+        sdp_sctpmap_t         sctpmap;
         sdp_qos_t             qos;
         sdp_curr_t            curr;
         sdp_des_t             des;
@@ -1565,6 +1520,12 @@ extern sdp_result_e sdp_attr_set_fmtp_max_fs (void *sdp_ptr,
 				              u16 inst_num,
 					      u32 max_fs);
 
+extern sdp_result_e sdp_attr_set_fmtp_max_fr (void *sdp_ptr,
+                                              u16 level,
+                                              u8 cap_num,
+                                              u16 inst_num,
+                                              u32 max_fr);
+
 extern sdp_result_e sdp_attr_set_fmtp_max_cpb (void *sdp_ptr,
 					      u16 level,
 				              u8 cap_num,
@@ -1645,15 +1606,6 @@ extern char* sdp_attr_get_fmtp_maxcodedaudiobandwidth (void *sdp_ptr, u16 level,
                                                              u8 cap_num, u16 inst_num);
 extern sdp_result_e sdp_attr_get_fmtp_cbr (void *sdp_ptr, u16 level,
                              u8 cap_num, u16 inst_num, tinybool* val);
-extern sdp_result_e sdp_attr_set_fmtp_streams (void *sdp_ptr, u16 level,
-                             u8 cap_num, u16 inst_num, u32 streams);
-extern sdp_result_e sdp_attr_get_fmtp_streams (void *sdp_ptr, u16 level,
-                             u8 cap_num, u16 inst_num, u32* val);
-extern sdp_result_e sdp_attr_get_fmtp_data_channel_protocol (void *sdp_ptr, u16 level,
-                             u8 cap_num, u16 inst_num, char* protocol);
-extern sdp_result_e sdp_attr_set_fmtp_data_channel_protocol (void *sdp_ptr, u16 level,
-                             u8 cap_num, u16 inst_num,
-                             const char *protocol);
 extern int32 sdp_attr_get_fmtp_custom_x (void *sdp_ptr, u16 level,
                                          u8 cap_num, u16 inst_num);
 extern int32 sdp_attr_get_fmtp_custom_y (void *sdp_ptr, u16 level,
@@ -1694,6 +1646,22 @@ extern int32 sdp_attr_get_fmtp_annex_p_picture_resize (void *sdp_ptr, u16 level,
 extern int32 sdp_attr_get_fmtp_annex_p_warp (void *sdp_ptr, u16 level,
                                              u8 cap_num, u16 inst_num);
 
+/* sctpmap params */
+extern u16 sdp_attr_get_sctpmap_port(void *sdp_ptr, u16 level,
+                                     u8 cap_num, u16 inst_num);
+extern sdp_result_e sdp_attr_set_sctpmap_port(void *sdp_ptr, u16 level,
+                                              u8 cap_num, u16 inst_num,
+                                              u16 port);
+extern sdp_result_e sdp_attr_get_sctpmap_protocol (void *sdp_ptr, u16 level,
+                             u8 cap_num, u16 inst_num, char* protocol);
+extern sdp_result_e sdp_attr_set_sctpmap_protocol (void *sdp_ptr, u16 level,
+                             u8 cap_num, u16 inst_num,
+                             const char *protocol);
+extern sdp_result_e sdp_attr_set_sctpmap_streams (void *sdp_ptr, u16 level,
+                             u8 cap_num, u16 inst_num, u32 streams);
+extern sdp_result_e sdp_attr_get_sctpmap_streams (void *sdp_ptr, u16 level,
+                             u8 cap_num, u16 inst_num, u32* val);
+
 /* H.264 codec specific params */
 
 extern const char *sdp_attr_get_fmtp_profile_id(void *sdp_ptr, u16 level,
@@ -1733,6 +1701,8 @@ extern sdp_result_e sdp_attr_get_fmtp_max_rcmd_nalu_size (void *sdp_ptr,
 extern sdp_result_e sdp_attr_get_fmtp_max_mbps (void *sdp_ptr, u16 level,
                                          u8 cap_num, u16 inst_num, u32 *val);
 extern sdp_result_e sdp_attr_get_fmtp_max_fs (void *sdp_ptr, u16 level,
+                                       u8 cap_num, u16 inst_num, u32 *val);
+extern sdp_result_e sdp_attr_get_fmtp_max_fr (void *sdp_ptr, u16 level,
                                        u8 cap_num, u16 inst_num, u32 *val);
 extern sdp_result_e sdp_attr_get_fmtp_max_cpb (void *sdp_ptr, u16 level,
                                         u8 cap_num, u16 inst_num, u32 *val);

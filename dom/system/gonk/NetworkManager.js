@@ -233,6 +233,7 @@ NetworkManager.prototype = {
             if (network.type == Ci.nsINetworkInterface.NETWORK_TYPE_MOBILE ||
                 network.type == Ci.nsINetworkInterface.NETWORK_TYPE_MOBILE_MMS ||
                 network.type == Ci.nsINetworkInterface.NETWORK_TYPE_MOBILE_SUPL) {
+              this.removeHostRoutes(network.name);
               this.addHostRoute(network);
             }
             // Add extra host route. For example, mms proxy or mmsc.
@@ -575,6 +576,10 @@ NetworkManager.prototype = {
   },
 
   resetRoutingTable: function resetRoutingTable(network) {
+    if (!network.ip || !network.netmask) {
+      debug("Either ip or netmask is null. Cannot reset routing table.");
+      return;
+    }
     let options = {
       cmd: "removeNetworkRoute",
       ifname: network.name,
@@ -636,6 +641,15 @@ NetworkManager.prototype = {
       ifname: network.name,
       gateway: network.gateway,
       hostnames: [network.dns1, network.dns2, network.httpProxyHost]
+    };
+    this.worker.postMessage(options);
+  },
+
+  removeHostRoutes: function removeHostRoutes(ifname) {
+    debug("Going to remove all host routes on " + ifname);
+    let options = {
+      cmd: "removeHostRoutes",
+      ifname: ifname,
     };
     this.worker.postMessage(options);
   },
@@ -900,6 +914,25 @@ NetworkManager.prototype = {
     if (callback) {
       callback.wifiTetheringEnabledChange(msg);
     }
+  },
+
+  // Enable/Disable DHCP server.
+  setDhcpServer: function setDhcpServer(enabled, config, callback) {
+    if (null === config) {
+      config = {};
+    }
+
+    config.cmd = "setDhcpServer";
+    config.isAsync = true;
+    config.enabled = enabled;
+
+    this.controlMessage(config, function setDhcpServerResult(response) {
+      if (!response.success) {
+        callback.dhcpServerResult('Set DHCP server error');
+        return;
+      }
+      callback.dhcpServerResult(null);
+    });
   },
 
   // Enable/disable WiFi tethering by sending commands to netd.

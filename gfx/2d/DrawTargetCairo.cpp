@@ -9,6 +9,7 @@
 #include "PathCairo.h"
 #include "HelpersCairo.h"
 #include "ScaledFontBase.h"
+#include "BorrowedContext.h"
 
 #include "cairo.h"
 #include "cairo-tee.h"
@@ -27,10 +28,16 @@
 #include "cairo-xlib.h"
 #endif
 
+#ifdef CAIRO_HAS_WIN32_SURFACE
+#include "cairo-win32.h"
+#endif
+
 #include <algorithm>
 
 namespace mozilla {
 namespace gfx {
+
+cairo_surface_t *DrawTargetCairo::mDummySurface;
 
 namespace {
 
@@ -102,11 +109,39 @@ GetCairoSurfaceSize(cairo_surface_t* surface, IntSize& size)
       // It's valid to call these CGBitmapContext functions on non-bitmap
       // contexts; they'll just return 0 in that case.
       size.width = CGBitmapContextGetWidth(cgc);
-      size.height = CGBitmapContextGetWidth(cgc);
+      size.height = CGBitmapContextGetHeight(cgc);
+      return true;
+    }
+#endif
+#ifdef CAIRO_HAS_WIN32_SURFACE
+    case CAIRO_SURFACE_TYPE_WIN32:
+    case CAIRO_SURFACE_TYPE_WIN32_PRINTING:
+    {
+      size.width = cairo_win32_surface_get_width(surface);
+      size.height = cairo_win32_surface_get_height(surface);
       return true;
     }
 #endif
 
+    default:
+      return false;
+  }
+}
+
+static bool
+SupportsSelfCopy(cairo_surface_t* surface)
+{
+  switch (cairo_surface_get_type(surface))
+  {
+#ifdef CAIRO_HAS_QUARTZ_SURFACE
+    case CAIRO_SURFACE_TYPE_QUARTZ:
+      return true;
+#endif
+#ifdef CAIRO_HAS_WIN32_SURFACE
+    case CAIRO_SURFACE_TYPE_WIN32:
+    case CAIRO_SURFACE_TYPE_WIN32_PRINTING:
+      return true;
+#endif
     default:
       return false;
   }
@@ -364,19 +399,17 @@ NeedIntermediateSurface(const Pattern& aPattern, const DrawOptions& aOptions)
 
 DrawTargetCairo::DrawTargetCairo()
   : mContext(nullptr)
-  , mPathObserver(nullptr)
+  , mLockedBits(nullptr)
 {
 }
 
 DrawTargetCairo::~DrawTargetCairo()
 {
-  if (mPathObserver) {
-    mPathObserver->ForgetDrawTarget();
-  }
   cairo_destroy(mContext);
   if (mSurface) {
     cairo_surface_destroy(mSurface);
   }
+  MOZ_ASSERT(!mLockedBits);
 }
 
 IntSize
@@ -402,6 +435,31 @@ DrawTargetCairo::Snapshot()
   return mSnapshot;
 }
 
+bool
+DrawTargetCairo::LockBits(uint8_t** aData, IntSize* aSize,
+                          int32_t* aStride, SurfaceFormat* aFormat)
+{
+  if (cairo_surface_get_type(mSurface) == CAIRO_SURFACE_TYPE_IMAGE) {
+    WillChange();
+
+    mLockedBits = cairo_image_surface_get_data(mSurface);
+    *aData = mLockedBits;
+    *aSize = GetSize();
+    *aStride = cairo_image_surface_get_stride(mSurface);
+    *aFormat = GetFormat();
+    return true;
+  }
+
+  return false;
+}
+
+void
+DrawTargetCairo::ReleaseBits(uint8_t* aData)
+{
+  MOZ_ASSERT(mLockedBits == aData);
+  mLockedBits = nullptr;
+}
+
 void
 DrawTargetCairo::Flush()
 {
@@ -413,6 +471,18 @@ void
 DrawTargetCairo::PrepareForDrawing(cairo_t* aContext, const Path* aPath /* = nullptr */)
 {
   WillChange(aPath);
+}
+
+cairo_surface_t*
+DrawTargetCairo::GetDummySurface()
+{
+  if (mDummySurface) {
+    return mDummySurface;
+  }
+
+  mDummySurface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+
+  return mDummySurface;
 }
 
 void
@@ -442,20 +512,28 @@ DrawTargetCairo::DrawSurface(SourceSurface *aSurface,
 
   cairo_set_antialias(mContext, GfxAntialiasToCairoAntialias(aOptions.mAntialiasMode));
 
+  double clipX1, clipY1, clipX2, clipY2;
+  cairo_clip_extents(mContext, &clipX1, &clipY1, &clipX2, &clipY2);
+  Rect clip(clipX1, clipY1, clipX2 - clipX1, clipY2 - clipY1); // Narrowing of doubles to floats
+  // If the destination rect covers the entire clipped area, then unbounded and bounded
+  // operations are identical, and we don't need to push a group.
+  bool needsGroup = !IsOperatorBoundByMask(aOptions.mCompositionOp) &&
+                    !aDest.Contains(clip);
+
   cairo_translate(mContext, aDest.X(), aDest.Y());
 
-  if (IsOperatorBoundByMask(aOptions.mCompositionOp)) {
-    cairo_new_path(mContext);
-    cairo_rectangle(mContext, 0, 0, aDest.Width(), aDest.Height());
-    cairo_clip(mContext);
-    cairo_set_source(mContext, pat);
-  } else {
+  if (needsGroup) {
     cairo_push_group(mContext);
       cairo_new_path(mContext);
       cairo_rectangle(mContext, 0, 0, aDest.Width(), aDest.Height());
       cairo_set_source(mContext, pat);
       cairo_fill(mContext);
     cairo_pop_group_to_source(mContext);
+  } else {
+    cairo_new_path(mContext);
+    cairo_rectangle(mContext, 0, 0, aDest.Width(), aDest.Height());
+    cairo_clip(mContext);
+    cairo_set_source(mContext, pat);
   }
 
   cairo_set_operator(mContext, GfxOpToCairoOp(aOptions.mCompositionOp));
@@ -542,7 +620,8 @@ void
 DrawTargetCairo::DrawPattern(const Pattern& aPattern,
                              const StrokeOptions& aStrokeOptions,
                              const DrawOptions& aOptions,
-                             DrawPatternType aDrawType)
+                             DrawPatternType aDrawType,
+                             bool aPathBoundsClip)
 {
   if (!PatternIsCompatible(aPattern)) {
     return;
@@ -556,7 +635,7 @@ DrawTargetCairo::DrawPattern(const Pattern& aPattern,
   cairo_set_antialias(mContext, GfxAntialiasToCairoAntialias(aOptions.mAntialiasMode));
 
   if (NeedIntermediateSurface(aPattern, aOptions) ||
-      !IsOperatorBoundByMask(aOptions.mCompositionOp)) {
+      (!IsOperatorBoundByMask(aOptions.mCompositionOp) && !aPathBoundsClip)) {
     cairo_push_group_with_content(mContext, CAIRO_CONTENT_COLOR_ALPHA);
 
     ClearSurfaceForUnboundedSource(aOptions.mCompositionOp);
@@ -601,7 +680,36 @@ DrawTargetCairo::FillRect(const Rect &aRect,
   cairo_new_path(mContext);
   cairo_rectangle(mContext, aRect.x, aRect.y, aRect.Width(), aRect.Height());
 
-  DrawPattern(aPattern, StrokeOptions(), aOptions, DRAW_FILL);
+  bool pathBoundsClip = false;
+
+  double cexts[4];
+  cairo_clip_extents(mContext, &cexts[0], &cexts[1], &cexts[2], &cexts[3]);
+  Rect clipRect(cexts[0], cexts[1], cexts[2] - cexts[0], cexts[3] - cexts[1]);
+  double pexts[4];
+  cairo_path_extents(mContext, &pexts[0], &pexts[1], &pexts[2], &pexts[3]);
+  Rect pathRect(pexts[0], pexts[1], pexts[2] - pexts[0], pexts[3] - pexts[1]);
+  if (pathRect.Contains(clipRect)) {
+    pathBoundsClip = true;
+  }
+
+  DrawPattern(aPattern, StrokeOptions(), aOptions, DRAW_FILL, pathBoundsClip);
+}
+
+void
+DrawTargetCairo::CopySurfaceInternal(cairo_surface_t* aSurface,
+                                     const IntRect &aSource,
+                                     const IntPoint &aDest)
+{
+  cairo_identity_matrix(mContext);
+
+  cairo_set_source_surface(mContext, aSurface, aDest.x - aSource.x, aDest.y - aSource.y);
+  cairo_set_operator(mContext, CAIRO_OPERATOR_SOURCE);
+  cairo_set_antialias(mContext, CAIRO_ANTIALIAS_NONE);
+
+  cairo_reset_clip(mContext);
+  cairo_new_path(mContext);
+  cairo_rectangle(mContext, aDest.x, aDest.y, aSource.width, aSource.height);
+  cairo_fill(mContext);
 }
 
 void
@@ -619,16 +727,40 @@ DrawTargetCairo::CopySurface(SourceSurface *aSurface,
 
   cairo_surface_t* surf = static_cast<SourceSurfaceCairo*>(aSurface)->GetSurface();
 
-  cairo_identity_matrix(mContext);
+  CopySurfaceInternal(surf, aSource, aDest);
+}
 
-  cairo_set_source_surface(mContext, surf, aDest.x - aSource.x, aDest.y - aSource.y);
-  cairo_set_operator(mContext, CAIRO_OPERATOR_SOURCE);
-  cairo_set_antialias(mContext, CAIRO_ANTIALIAS_NONE);
+void
+DrawTargetCairo::CopyRect(const IntRect &aSource,
+                          const IntPoint &aDest)
+{
+  AutoPrepareForDrawing prep(this, mContext);
 
-  cairo_reset_clip(mContext);
-  cairo_new_path(mContext);
-  cairo_rectangle(mContext, aDest.x, aDest.y, aSource.width, aSource.height);
-  cairo_fill(mContext);
+  IntRect source = aSource;
+  cairo_surface_t* surf = mSurface;
+
+  if (!SupportsSelfCopy(mSurface) &&
+      aDest.y >= aSource.y &&
+      aDest.y < aSource.YMost()) {
+    cairo_surface_t* similar = cairo_surface_create_similar(mSurface,
+                                                            GfxFormatToCairoContent(GetFormat()),
+                                                            aSource.width, aSource.height);
+    cairo_t* ctx = cairo_create(similar);
+    cairo_set_operator(ctx, CAIRO_OPERATOR_SOURCE);
+    cairo_set_source_surface(ctx, surf, -aSource.x, -aSource.y);
+    cairo_paint(ctx);
+    cairo_destroy(ctx);
+
+    source.x = 0;
+    source.y = 0;
+    surf = similar;
+  }
+
+  CopySurfaceInternal(surf, source, aDest);
+
+  if (surf != mSurface) {
+    cairo_surface_destroy(surf);
+  }
 }
 
 void
@@ -686,7 +818,7 @@ DrawTargetCairo::Stroke(const Path *aPath,
     return;
 
   PathCairo* path = const_cast<PathCairo*>(static_cast<const PathCairo*>(aPath));
-  path->CopyPathTo(mContext, this);
+  path->SetPathOnContext(mContext);
 
   DrawPattern(aPattern, aStrokeOptions, aOptions, DRAW_STROKE);
 }
@@ -702,7 +834,7 @@ DrawTargetCairo::Fill(const Path *aPath,
     return;
 
   PathCairo* path = const_cast<PathCairo*>(static_cast<const PathCairo*>(aPath));
-  path->CopyPathTo(mContext, this);
+  path->SetPathOnContext(mContext);
 
   DrawPattern(aPattern, StrokeOptions(), aOptions, DRAW_FILL);
 }
@@ -814,7 +946,7 @@ DrawTargetCairo::PushClip(const Path *aPath)
   cairo_save(mContext);
 
   PathCairo* path = const_cast<PathCairo*>(static_cast<const PathCairo*>(aPath));
-  path->CopyPathTo(mContext, this);
+  path->SetPathOnContext(mContext);
   cairo_clip_preserve(mContext);
 }
 
@@ -839,9 +971,7 @@ DrawTargetCairo::PopClip()
 TemporaryRef<PathBuilder>
 DrawTargetCairo::CreatePathBuilder(FillRule aFillRule /* = FILL_WINDING */) const
 {
-  RefPtr<PathBuilderCairo> builder = new PathBuilderCairo(mContext,
-                                                          const_cast<DrawTargetCairo*>(this),
-                                                          aFillRule);
+  RefPtr<PathBuilderCairo> builder = new PathBuilderCairo(aFillRule);
 
   return builder;
 }
@@ -880,6 +1010,7 @@ CopyDataToCairoSurface(cairo_surface_t* aSurface,
                        int32_t aPixelWidth)
 {
   unsigned char* surfData = cairo_image_surface_get_data(aSurface);
+  int surfStride = cairo_image_surface_get_stride(aSurface);
   // In certain scenarios, requesting larger than 8k image fails.  Bug 803568
   // covers the details of how to run into it, but the full detailed
   // investigation hasn't been done to determine the underlying cause.  We
@@ -888,7 +1019,7 @@ CopyDataToCairoSurface(cairo_surface_t* aSurface,
     return;
   }
   for (int32_t y = 0; y < aSize.height; ++y) {
-    memcpy(surfData + y * aSize.width * aPixelWidth,
+    memcpy(surfData + y * surfStride,
            aData + y * aStride,
            aSize.width * aPixelWidth);
   }
@@ -1048,21 +1179,7 @@ void
 DrawTargetCairo::WillChange(const Path* aPath /* = nullptr */)
 {
   MarkSnapshotIndependent();
-
-  if (mPathObserver &&
-      (!aPath || !mPathObserver->ContainsPath(aPath))) {
-    mPathObserver->PathWillChange();
-    mPathObserver = nullptr;
-  }
-}
-
-void
-DrawTargetCairo::SetPathObserver(CairoPathContext* aPathObserver)
-{
-  if (mPathObserver && mPathObserver != aPathObserver) {
-    mPathObserver->PathWillChange();
-  }
-  mPathObserver = aPathObserver;
+  MOZ_ASSERT(!mLockedBits);
 }
 
 void
@@ -1073,6 +1190,39 @@ DrawTargetCairo::SetTransform(const Matrix& aTransform)
   cairo_matrix_t mat;
   GfxMatrixToCairoMatrix(mTransform, mat);
   cairo_set_matrix(mContext, &mat);
+}
+
+cairo_t*
+BorrowedCairoContext::BorrowCairoContextFromDrawTarget(DrawTarget* aDT)
+{
+  if (aDT->GetType() != BACKEND_CAIRO || aDT->IsDualDrawTarget()) {
+    return nullptr;
+  }
+  DrawTargetCairo* cairoDT = static_cast<DrawTargetCairo*>(aDT);
+
+  cairoDT->WillChange();
+
+  // save the state to make it easier for callers to avoid mucking with things
+  cairo_save(cairoDT->mContext);
+
+  // Neuter the DrawTarget while the context is being borrowed
+  cairo_t* cairo = cairoDT->mContext;
+  cairoDT->mContext = nullptr;
+
+  return cairo;
+}
+
+void
+BorrowedCairoContext::ReturnCairoContextToDrawTarget(DrawTarget* aDT,
+                                                     cairo_t* aCairo)
+{
+  if (aDT->GetType() != BACKEND_CAIRO || aDT->IsDualDrawTarget()) {
+    return;
+  }
+  DrawTargetCairo* cairoDT = static_cast<DrawTargetCairo*>(aDT);
+
+  cairo_restore(aCairo);
+  cairoDT->mContext = aCairo;
 }
 
 }

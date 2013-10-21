@@ -18,9 +18,8 @@
 
 #include "jsatominlines.h"
 #include "jscompartmentinlines.h"
+#include "jsgcinlines.h"
 #include "jsinferinlines.h"
-
-#include "vm/Shape-inl.h"
 
 /* static */ inline bool
 JSObject::setGenericAttributes(JSContext *cx, js::HandleObject obj,
@@ -35,7 +34,8 @@ JSObject::setGenericAttributes(JSContext *cx, js::HandleObject obj,
 JSObject::changePropertyAttributes(JSContext *cx, js::HandleObject obj,
                                    js::HandleShape shape, unsigned attrs)
 {
-    return !!changeProperty(cx, obj, shape, attrs, 0, shape->getter(), shape->setter());
+    return !!changeProperty<js::SequentialExecution>(cx, obj, shape, attrs, 0,
+                                                     shape->getter(), shape->setter());
 }
 
 /* static */ inline bool
@@ -75,7 +75,7 @@ JSObject::deleteSpecial(JSContext *cx, js::HandleObject obj, js::HandleSpecialId
 inline void
 JSObject::finalize(js::FreeOp *fop)
 {
-    js::Probes::finalizeObject(this);
+    js::probes::FinalizeObject(this);
 
 #ifdef DEBUG
     JS_ASSERT(isTenured());
@@ -84,7 +84,7 @@ JSObject::finalize(js::FreeOp *fop)
         JS_ASSERT(CurrentThreadCanAccessRuntime(fop->runtime()));
     }
 #endif
-    js::Class *clasp = getClass();
+    const js::Class *clasp = getClass();
     if (clasp->finalize)
         clasp->finalize(fop, this);
 
@@ -136,6 +136,15 @@ JSObject::setShouldConvertDoubleElements()
     getElementsHeader()->setShouldConvertDoubleElements();
 }
 
+inline bool
+JSObject::setDenseElementIfHasType(uint32_t index, const js::Value &val)
+{
+    if (!js::types::HasTypePropertyId(this, JSID_VOID, val))
+        return false;
+    setDenseElementMaybeConvertDouble(index, val);
+    return true;
+}
+
 /* static */ inline void
 JSObject::setDenseElementWithType(js::ExclusiveContext *cx, js::HandleObject obj, uint32_t index,
                                   const js::Value &val)
@@ -171,61 +180,10 @@ JSObject::removeDenseElementForSparseIndex(js::ExclusiveContext *cx,
         obj->setDenseElement(index, js::MagicValue(JS_ELEMENTS_HOLE));
 }
 
-inline void
-JSObject::copyDenseElements(uint32_t dstStart, const js::Value *src, uint32_t count)
+inline bool
+JSObject::writeToIndexWouldMarkNotPacked(uint32_t index)
 {
-    JS_ASSERT(dstStart + count <= getDenseCapacity());
-    JS::Zone *zone = this->zone();
-    for (uint32_t i = 0; i < count; ++i)
-        elements[dstStart + i].set(zone, this, js::HeapSlot::Element, dstStart + i, src[i]);
-}
-
-inline void
-JSObject::moveDenseElements(uint32_t dstStart, uint32_t srcStart, uint32_t count)
-{
-    JS_ASSERT(dstStart + count <= getDenseCapacity());
-    JS_ASSERT(srcStart + count <= getDenseInitializedLength());
-
-    /*
-     * Using memmove here would skip write barriers. Also, we need to consider
-     * an array containing [A, B, C], in the following situation:
-     *
-     * 1. Incremental GC marks slot 0 of array (i.e., A), then returns to JS code.
-     * 2. JS code moves slots 1..2 into slots 0..1, so it contains [B, C, C].
-     * 3. Incremental GC finishes by marking slots 1 and 2 (i.e., C).
-     *
-     * Since normal marking never happens on B, it is very important that the
-     * write barrier is invoked here on B, despite the fact that it exists in
-     * the array before and after the move.
-    */
-    JS::Zone *zone = this->zone();
-    if (zone->needsBarrier()) {
-        if (dstStart < srcStart) {
-            js::HeapSlot *dst = elements + dstStart;
-            js::HeapSlot *src = elements + srcStart;
-            for (uint32_t i = 0; i < count; i++, dst++, src++)
-                dst->set(zone, this, js::HeapSlot::Element, dst - elements, *src);
-        } else {
-            js::HeapSlot *dst = elements + dstStart + count - 1;
-            js::HeapSlot *src = elements + srcStart + count - 1;
-            for (uint32_t i = 0; i < count; i++, dst--, src--)
-                dst->set(zone, this, js::HeapSlot::Element, dst - elements, *src);
-        }
-    } else {
-        memmove(elements + dstStart, elements + srcStart, count * sizeof(js::HeapSlot));
-        DenseRangeWriteBarrierPost(runtimeFromMainThread(), this, dstStart, count);
-    }
-}
-
-inline void
-JSObject::moveDenseElementsUnbarriered(uint32_t dstStart, uint32_t srcStart, uint32_t count)
-{
-    JS_ASSERT(!zone()->needsBarrier());
-
-    JS_ASSERT(dstStart + count <= getDenseCapacity());
-    JS_ASSERT(srcStart + count <= getDenseCapacity());
-
-    memmove(elements + dstStart, elements + srcStart, count * sizeof(js::Value));
+    return getElementsHeader()->initializedLength < index;
 }
 
 inline void
@@ -236,8 +194,11 @@ JSObject::markDenseElementsNotPacked(js::ExclusiveContext *cx)
 }
 
 inline void
-JSObject::ensureDenseInitializedLength(js::ExclusiveContext *cx, uint32_t index, uint32_t extra)
+JSObject::ensureDenseInitializedLengthNoPackedCheck(js::ThreadSafeContext *cx, uint32_t index,
+                                                    uint32_t extra)
 {
+    JS_ASSERT(cx->isThreadLocal(this));
+
     /*
      * Ensure that the array's contents have been initialized up to index, and
      * mark the elements through 'index + extra' as initialized in preparation
@@ -245,8 +206,6 @@ JSObject::ensureDenseInitializedLength(js::ExclusiveContext *cx, uint32_t index,
      */
     JS_ASSERT(index + extra <= getDenseCapacity());
     uint32_t &initlen = getElementsHeader()->initializedLength;
-    if (initlen < index)
-        markDenseElementsNotPacked(cx);
 
     if (initlen < index + extra) {
         JSRuntime *rt = runtimeFromAnyThread();
@@ -259,10 +218,28 @@ JSObject::ensureDenseInitializedLength(js::ExclusiveContext *cx, uint32_t index,
     }
 }
 
+inline void
+JSObject::ensureDenseInitializedLength(js::ExclusiveContext *cx, uint32_t index, uint32_t extra)
+{
+    if (writeToIndexWouldMarkNotPacked(index))
+        markDenseElementsNotPacked(cx);
+    ensureDenseInitializedLengthNoPackedCheck(cx, index, extra);
+}
+
+inline void
+JSObject::ensureDenseInitializedLengthPreservePackedFlag(js::ThreadSafeContext *cx,
+                                                         uint32_t index, uint32_t extra)
+{
+    JS_ASSERT(!writeToIndexWouldMarkNotPacked(index));
+    ensureDenseInitializedLengthNoPackedCheck(cx, index, extra);
+}
+
 JSObject::EnsureDenseResult
 JSObject::extendDenseElements(js::ThreadSafeContext *cx,
                               uint32_t requiredCapacity, uint32_t extra)
 {
+    JS_ASSERT(cx->isThreadLocal(this));
+
     /*
      * Don't grow elements for non-extensible objects or watched objects. Dense
      * elements can be added/written with no extensible or watchpoint checks as
@@ -297,45 +274,7 @@ JSObject::extendDenseElements(js::ThreadSafeContext *cx,
 }
 
 inline JSObject::EnsureDenseResult
-JSObject::parExtendDenseElements(js::ThreadSafeContext *cx, js::Value *v, uint32_t extra)
-{
-    JS_ASSERT(isNative());
-    JS_ASSERT_IF(is<js::ArrayObject>(), as<js::ArrayObject>().lengthIsWritable());
-
-    js::ObjectElements *header = getElementsHeader();
-    uint32_t initializedLength = header->initializedLength;
-    uint32_t requiredCapacity = initializedLength + extra;
-    if (requiredCapacity < initializedLength)
-        return ED_SPARSE; /* Overflow. */
-
-    if (requiredCapacity > header->capacity) {
-        EnsureDenseResult edr = extendDenseElements(cx, requiredCapacity, extra);
-        if (edr != ED_OK)
-            return edr;
-    }
-
-    // Watch out lest the header has been reallocated by
-    // extendDenseElements():
-    header = getElementsHeader();
-
-    js::HeapSlot *sp = elements + initializedLength;
-    if (v) {
-        for (uint32_t i = 0; i < extra; i++) {
-            JS_ASSERT_IF(v[i].isMarkable(), static_cast<js::gc::Cell *>(v[i].toGCThing())->isTenured());
-            *sp[i].unsafeGet() = v[i];
-        }
-    } else {
-        for (uint32_t i = 0; i < extra; i++)
-            *sp[i].unsafeGet() = js::MagicValue(JS_ELEMENTS_HOLE);
-    }
-    header->initializedLength = requiredCapacity;
-    if (header->length < requiredCapacity)
-        header->length = requiredCapacity;
-    return ED_OK;
-}
-
-inline JSObject::EnsureDenseResult
-JSObject::ensureDenseElements(js::ExclusiveContext *cx, uint32_t index, uint32_t extra)
+JSObject::ensureDenseElementsNoPackedCheck(js::ThreadSafeContext *cx, uint32_t index, uint32_t extra)
 {
     JS_ASSERT(isNative());
 
@@ -345,7 +284,7 @@ JSObject::ensureDenseElements(js::ExclusiveContext *cx, uint32_t index, uint32_t
     if (extra == 1) {
         /* Optimize for the common case. */
         if (index < currentCapacity) {
-            ensureDenseInitializedLength(cx, index, 1);
+            ensureDenseInitializedLengthNoPackedCheck(cx, index, 1);
             return ED_OK;
         }
         requiredCapacity = index + 1;
@@ -360,7 +299,7 @@ JSObject::ensureDenseElements(js::ExclusiveContext *cx, uint32_t index, uint32_t
             return ED_SPARSE;
         }
         if (requiredCapacity <= currentCapacity) {
-            ensureDenseInitializedLength(cx, index, extra);
+            ensureDenseInitializedLengthNoPackedCheck(cx, index, extra);
             return ED_OK;
         }
     }
@@ -369,8 +308,24 @@ JSObject::ensureDenseElements(js::ExclusiveContext *cx, uint32_t index, uint32_t
     if (edr != ED_OK)
         return edr;
 
-    ensureDenseInitializedLength(cx, index, extra);
+    ensureDenseInitializedLengthNoPackedCheck(cx, index, extra);
     return ED_OK;
+}
+
+inline JSObject::EnsureDenseResult
+JSObject::ensureDenseElements(js::ExclusiveContext *cx, uint32_t index, uint32_t extra)
+{
+    if (writeToIndexWouldMarkNotPacked(index))
+        markDenseElementsNotPacked(cx);
+    return ensureDenseElementsNoPackedCheck(cx, index, extra);
+}
+
+inline JSObject::EnsureDenseResult
+JSObject::ensureDenseElementsPreservePackedFlag(js::ThreadSafeContext *cx, uint32_t index,
+                                                uint32_t extra)
+{
+    JS_ASSERT(!writeToIndexWouldMarkNotPacked(index));
+    return ensureDenseElementsNoPackedCheck(cx, index, extra);
 }
 
 /* static */ inline bool
@@ -409,7 +364,7 @@ JSObject::clearType(JSContext *cx, js::HandleObject obj)
     JS_ASSERT(!obj->hasSingletonType());
     JS_ASSERT(cx->compartment() == obj->compartment());
 
-    js::types::TypeObject *type = cx->getNewType(obj->getClass(), NULL);
+    js::types::TypeObject *type = cx->getNewType(obj->getClass(), nullptr);
     if (!type)
         return false;
 
@@ -421,8 +376,6 @@ inline void
 JSObject::setType(js::types::TypeObject *newType)
 {
     JS_ASSERT(newType);
-    JS_ASSERT_IF(getClass()->emulatesUndefined(),
-                 newType->hasAnyFlags(js::types::OBJECT_FLAG_EMULATES_UNDEFINED));
     JS_ASSERT(!hasSingletonType());
     type_ = newType;
 }
@@ -449,7 +402,7 @@ inline bool JSObject::isVarObj()
 /* static */ inline JSObject *
 JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
                  js::HandleShape shape, js::HandleTypeObject type,
-                 js::HeapSlot *extantSlots /* = NULL */)
+                 js::HeapSlot *extantSlots /* = nullptr */)
 {
     /*
      * Callers must use dynamicSlotsCount to size the initial slot array of the
@@ -470,7 +423,7 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
         if (nDynamicSlots) {
             slots = cx->pod_malloc<js::HeapSlot>(nDynamicSlots);
             if (!slots)
-                return NULL;
+                return nullptr;
             js::Debug_SetSlotRangeToCrashOnTouch(slots, nDynamicSlots);
         }
     }
@@ -478,7 +431,7 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
     JSObject *obj = js_NewGCObject<js::CanGC>(cx, kind, heap);
     if (!obj) {
         js_free(slots);
-        return NULL;
+        return nullptr;
     }
 
 #ifdef JSGC_GENERATIONAL
@@ -493,7 +446,7 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
 
     const js::Class *clasp = type->clasp;
     if (clasp->hasPrivate())
-        obj->privateRef(shape->numFixedSlots()) = NULL;
+        obj->privateRef(shape->numFixedSlots()) = nullptr;
 
     size_t span = shape->slotSpan();
     if (span && clasp != &js::ArrayBufferObject::class_)
@@ -529,11 +482,11 @@ JSObject::createArray(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::
 
     JSObject *obj = js_NewGCObject<js::CanGC>(cx, kind, heap);
     if (!obj)
-        return NULL;
+        return nullptr;
 
     obj->shape_.init(shape);
     obj->type_.init(type);
-    obj->slots = NULL;
+    obj->slots = nullptr;
     obj->setFixedElements();
     new (obj->getElementsHeader()) js::ObjectElements(capacity, length);
 
@@ -566,6 +519,15 @@ JSObject::hasProperty(JSContext *cx, js::HandleObject obj,
         return false;
     }
     *foundp = !!prop;
+    return true;
+}
+
+inline bool
+JSObject::nativeSetSlotIfHasType(js::Shape *shape, const js::Value &value)
+{
+    if (!js::types::HasTypePropertyId(this, shape->propid(), value))
+        return false;
+    nativeSetSlot(shape->slot(), value);
     return true;
 }
 
@@ -711,7 +673,7 @@ IsNativeFunction(const js::Value &v, JSNative native)
  * TODO: a per-thread shape-based cache would be faster and simpler.
  */
 static JS_ALWAYS_INLINE bool
-ClassMethodIsNative(JSContext *cx, JSObject *obj, Class *clasp, jsid methodid, JSNative native)
+ClassMethodIsNative(JSContext *cx, JSObject *obj, const Class *clasp, jsid methodid, JSNative native)
 {
     JS_ASSERT(!obj->is<ProxyObject>());
     JS_ASSERT(obj->getClass() == clasp);
@@ -789,7 +751,7 @@ class AutoPropDescArrayRooter : private AutoGCRooter
 
     PropDesc *append() {
         if (!descriptors.append(PropDesc()))
-            return NULL;
+            return nullptr;
         return &descriptors.back();
     }
 
@@ -814,11 +776,11 @@ class AutoPropDescArrayRooter : private AutoGCRooter
  * default to the prototype's global if the prototype is non-null.
  */
 JSObject *
-NewObjectWithGivenProto(ExclusiveContext *cx, js::Class *clasp, TaggedProto proto, JSObject *parent,
+NewObjectWithGivenProto(ExclusiveContext *cx, const js::Class *clasp, TaggedProto proto, JSObject *parent,
                         gc::AllocKind allocKind, NewObjectKind newKind);
 
 inline JSObject *
-NewObjectWithGivenProto(ExclusiveContext *cx, js::Class *clasp, TaggedProto proto, JSObject *parent,
+NewObjectWithGivenProto(ExclusiveContext *cx, const js::Class *clasp, TaggedProto proto, JSObject *parent,
                         NewObjectKind newKind = GenericObject)
 {
     gc::AllocKind allocKind = gc::GetGCObjectKind(clasp);
@@ -826,14 +788,14 @@ NewObjectWithGivenProto(ExclusiveContext *cx, js::Class *clasp, TaggedProto prot
 }
 
 inline JSObject *
-NewObjectWithGivenProto(ExclusiveContext *cx, js::Class *clasp, JSObject *proto, JSObject *parent,
+NewObjectWithGivenProto(ExclusiveContext *cx, const js::Class *clasp, JSObject *proto, JSObject *parent,
                         NewObjectKind newKind = GenericObject)
 {
     return NewObjectWithGivenProto(cx, clasp, TaggedProto(proto), parent, newKind);
 }
 
 inline JSProtoKey
-GetClassProtoKey(js::Class *clasp)
+GetClassProtoKey(const js::Class *clasp)
 {
     JSProtoKey key = JSCLASS_CACHED_PROTO_KEY(clasp);
     if (key != JSProto_Null)
@@ -844,7 +806,7 @@ GetClassProtoKey(js::Class *clasp)
 }
 
 inline bool
-FindProto(ExclusiveContext *cx, js::Class *clasp, MutableHandleObject proto)
+FindProto(ExclusiveContext *cx, const js::Class *clasp, MutableHandleObject proto)
 {
     JSProtoKey protoKey = GetClassProtoKey(clasp);
     if (!js_GetClassPrototype(cx, protoKey, proto, clasp))
@@ -872,18 +834,18 @@ FindProto(ExclusiveContext *cx, js::Class *clasp, MutableHandleObject proto)
  * parent will be that global.
  */
 JSObject *
-NewObjectWithClassProtoCommon(ExclusiveContext *cx, js::Class *clasp, JSObject *proto, JSObject *parent,
+NewObjectWithClassProtoCommon(ExclusiveContext *cx, const js::Class *clasp, JSObject *proto, JSObject *parent,
                               gc::AllocKind allocKind, NewObjectKind newKind);
 
 inline JSObject *
-NewObjectWithClassProto(ExclusiveContext *cx, js::Class *clasp, JSObject *proto, JSObject *parent,
+NewObjectWithClassProto(ExclusiveContext *cx, const js::Class *clasp, JSObject *proto, JSObject *parent,
                         gc::AllocKind allocKind, NewObjectKind newKind = GenericObject)
 {
     return NewObjectWithClassProtoCommon(cx, clasp, proto, parent, allocKind, newKind);
 }
 
 inline JSObject *
-NewObjectWithClassProto(ExclusiveContext *cx, js::Class *clasp, JSObject *proto, JSObject *parent,
+NewObjectWithClassProto(ExclusiveContext *cx, const js::Class *clasp, JSObject *proto, JSObject *parent,
                         NewObjectKind newKind = GenericObject)
 {
     gc::AllocKind allocKind = gc::GetGCObjectKind(clasp);
@@ -895,14 +857,14 @@ NewObjectWithClassProto(ExclusiveContext *cx, js::Class *clasp, JSObject *proto,
  * according to the context's active global.
  */
 inline JSObject *
-NewBuiltinClassInstance(ExclusiveContext *cx, Class *clasp, gc::AllocKind allocKind,
+NewBuiltinClassInstance(ExclusiveContext *cx, const Class *clasp, gc::AllocKind allocKind,
                         NewObjectKind newKind = GenericObject)
 {
-    return NewObjectWithClassProto(cx, clasp, NULL, NULL, allocKind, newKind);
+    return NewObjectWithClassProto(cx, clasp, nullptr, nullptr, allocKind, newKind);
 }
 
 inline JSObject *
-NewBuiltinClassInstance(ExclusiveContext *cx, Class *clasp, NewObjectKind newKind = GenericObject)
+NewBuiltinClassInstance(ExclusiveContext *cx, const Class *clasp, NewObjectKind newKind = GenericObject)
 {
     gc::AllocKind allocKind = gc::GetGCObjectKind(clasp);
     return NewBuiltinClassInstance(cx, clasp, allocKind, newKind);
@@ -925,21 +887,22 @@ CopyInitializerObject(JSContext *cx, HandleObject baseobj, NewObjectKind newKind
     RootedObject obj(cx);
     obj = NewBuiltinClassInstance(cx, &JSObject::class_, allocKind, newKind);
     if (!obj)
-        return NULL;
+        return nullptr;
 
     RootedObject metadata(cx, obj->getMetadata());
     RootedShape lastProp(cx, baseobj->lastProperty());
     if (!JSObject::setLastProperty(cx, obj, lastProp))
-        return NULL;
+        return nullptr;
     if (metadata && !JSObject::setMetadata(cx, obj, metadata))
-        return NULL;
+        return nullptr;
 
     return obj;
 }
 
 JSObject *
 NewReshapedObject(JSContext *cx, HandleTypeObject type, JSObject *parent,
-                  gc::AllocKind kind, HandleShape shape);
+                  gc::AllocKind allocKind, HandleShape shape,
+                  NewObjectKind newKind = GenericObject);
 
 /*
  * As for gc::GetGCObjectKind, where numSlots is a guess at the final size of
@@ -974,15 +937,15 @@ DefineConstructorAndPrototype(JSContext *cx, Handle<GlobalObject*> global,
     JS_ASSERT(!global->nativeLookup(cx, id));
 
     /* Set these first in case AddTypePropertyId looks for this class. */
-    global->setSlot(key, ObjectValue(*ctor));
-    global->setSlot(key + JSProto_LIMIT, ObjectValue(*proto));
-    global->setSlot(key + JSProto_LIMIT * 2, ObjectValue(*ctor));
+    global->setConstructor(key, ObjectValue(*ctor));
+    global->setPrototype(key, ObjectValue(*proto));
+    global->setConstructorPropertySlot(key, ObjectValue(*ctor));
 
     types::AddTypePropertyId(cx, global, id, ObjectValue(*ctor));
-    if (!global->addDataProperty(cx, id, key + JSProto_LIMIT * 2, 0)) {
-        global->setSlot(key, UndefinedValue());
-        global->setSlot(key + JSProto_LIMIT, UndefinedValue());
-        global->setSlot(key + JSProto_LIMIT * 2, UndefinedValue());
+    if (!global->addDataProperty(cx, id, GlobalObject::constructorPropertySlot(key), 0)) {
+        global->setConstructor(key, UndefinedValue());
+        global->setPrototype(key, UndefinedValue());
+        global->setConstructorPropertySlot(key, UndefinedValue());
         return false;
     }
 
@@ -1031,11 +994,11 @@ ValueIsSpecial(JSObject *obj, MutableHandleValue propval, MutableHandle<SpecialI
 
 JSObject *
 DefineConstructorAndPrototype(JSContext *cx, HandleObject obj, JSProtoKey key, HandleAtom atom,
-                              JSObject *protoProto, Class *clasp,
+                              JSObject *protoProto, const Class *clasp,
                               Native constructor, unsigned nargs,
                               const JSPropertySpec *ps, const JSFunctionSpec *fs,
                               const JSPropertySpec *static_ps, const JSFunctionSpec *static_fs,
-                              JSObject **ctorp = NULL,
+                              JSObject **ctorp = nullptr,
                               gc::AllocKind ctorKind = JSFunction::FinalizeKind);
 
 static JS_ALWAYS_INLINE bool
@@ -1098,10 +1061,10 @@ DefineProperty(ExclusiveContext *cx, HandleObject obj, PropertyName *name, Handl
 
 extern JSObject *
 js_InitClass(JSContext *cx, js::HandleObject obj, JSObject *parent_proto,
-             js::Class *clasp, JSNative constructor, unsigned nargs,
+             const js::Class *clasp, JSNative constructor, unsigned nargs,
              const JSPropertySpec *ps, const JSFunctionSpec *fs,
              const JSPropertySpec *static_ps, const JSFunctionSpec *static_fs,
-             JSObject **ctorp = NULL,
+             JSObject **ctorp = nullptr,
              js::gc::AllocKind ctorKind = JSFunction::FinalizeKind);
 
 #endif /* jsobjinlines_h */

@@ -260,6 +260,12 @@ void SetTimezone(const nsCString& aTimezoneSpec);
 nsCString GetTimezone();
 
 /**
+ * Get timezone offset
+ * returns the timezone offset relative to UTC in minutes (DST effect included)
+ */
+int32_t GetTimezoneOffset();
+
+/**
  * Register observer for system clock changed notification.
  * @param aObserver The observer that should be added.
  */
@@ -483,7 +489,8 @@ bool SetAlarm(int32_t aSeconds, int32_t aNanoseconds);
  */
 void SetProcessPriority(int aPid,
                         hal::ProcessPriority aPriority,
-                        hal::ProcessCPUPriority aCPUPriority);
+                        hal::ProcessCPUPriority aCPUPriority,
+                        uint32_t aLRU = 0);
 
 /**
  * Register an observer for the FM radio.

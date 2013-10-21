@@ -53,7 +53,6 @@
         '../../../ipc/chromium/src',
         '../../../ipc/chromium/src/base/third_party/nspr',
         '../../../xpcom/base',
-        '$(DEPTH)/dist/include',
         '../../../dom/base',
         '../../../content/media',
         '../../../media/mtransport',
@@ -199,7 +198,8 @@
           ],
           'defines' : [
             'NO_CHROMIUM_LOGGING',
-            'USE_FAKE_MEDIA_STREAMS'
+            'USE_FAKE_MEDIA_STREAMS',
+            'USE_FAKE_PCOBSERVER'
           ],
         }],
         ['(OS=="linux") or (OS=="android")', {
@@ -285,9 +285,9 @@
         '../../../dom/base',
         '../trunk/third_party/libsrtp/srtp/include',
         '../trunk/third_party/libsrtp/srtp/crypto/include',
-        '$(DEPTH)/dist/include',
         # Danger: this is to include config.h. This could be bad.
         '../trunk/third_party/libsrtp/config',
+        '../../../netwerk/sctp/datachannel',
       ],
 
       #
@@ -587,6 +587,7 @@
         './src/sipcc/include/ccapi_service.h',
         './src/sipcc/include/ccapi_types.h',
         './src/sipcc/include/ccsdp.h',
+        './src/sipcc/include/ccsdp_rtcp_fb.h',
         './src/sipcc/include/config_api.h',
         './src/sipcc/include/dns_util.h',
         './src/sipcc/include/plat_api.h',

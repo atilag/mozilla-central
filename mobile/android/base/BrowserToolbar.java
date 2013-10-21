@@ -20,6 +20,11 @@ import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.util.UiAsyncTask;
 import org.mozilla.gecko.util.GeckoEventListener;
+import org.mozilla.gecko.util.StringUtils;
+import org.mozilla.gecko.widget.GeckoImageButton;
+import org.mozilla.gecko.widget.GeckoImageView;
+import org.mozilla.gecko.widget.GeckoRelativeLayout;
+import org.mozilla.gecko.widget.GeckoTextView;
 
 import org.json.JSONObject;
 
@@ -101,6 +106,14 @@ public class BrowserToolbar extends GeckoRelativeLayout
         public void onFilter(String searchText, AutocompleteHandler handler);
     }
 
+    public interface OnStartEditingListener {
+        public void onStartEditing();
+    }
+
+    public interface OnStopEditingListener {
+        public void onStopEditing();
+    }
+
     private LayoutParams mAwesomeBarParams;
     private View mUrlDisplayContainer;
     private View mUrlEditContainer;
@@ -128,10 +141,13 @@ public class BrowserToolbar extends GeckoRelativeLayout
     private LinearLayout mActionItemBar;
     private MenuPopup mMenuPopup;
     private List<? extends View> mFocusOrder;
+
     private OnActivateListener mActivateListener;
     private OnCommitListener mCommitListener;
     private OnDismissListener mDismissListener;
     private OnFilterListener mFilterListener;
+    private OnStartEditingListener mStartEditingListener;
+    private OnStopEditingListener mStopEditingListener;
 
     final private BrowserApp mActivity;
     private boolean mHasSoftMenuButton;
@@ -246,10 +262,10 @@ public class BrowserToolbar extends GeckoRelativeLayout
         mUrlEditContainer = findViewById(R.id.url_edit_container);
         mUrlEditText = (CustomEditText) findViewById(R.id.url_edit_text);
 
-        // This will clip the right edge's image at half of its width
+        // This will clip the right edge's image at 60% of its width
         mUrlBarRightEdge = (ImageView) findViewById(R.id.url_bar_right_edge);
         if (mUrlBarRightEdge != null) {
-            mUrlBarRightEdge.getDrawable().setLevel(5000);
+            mUrlBarRightEdge.getDrawable().setLevel(6000);
         }
 
         mTitle = (GeckoTextView) findViewById(R.id.url_bar_title);
@@ -1041,7 +1057,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
         showSoftInput();
     }
 
-    private void setTitle(CharSequence title) {
+    public void setTitle(CharSequence title) {
         mTitle.setText(title);
         setContentDescription(title != null ? title : mTitle.getHint());
     }
@@ -1081,8 +1097,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
             return;
         }
 
-        url = StringUtils.stripScheme(url);
-        CharSequence title = StringUtils.stripCommonSubdomains(url);
+        CharSequence title = StringUtils.stripCommonSubdomains(StringUtils.stripScheme(url));
 
         String baseDomain = tab.getBaseDomain();
         if (!TextUtils.isEmpty(baseDomain)) {
@@ -1106,7 +1121,7 @@ public class BrowserToolbar extends GeckoRelativeLayout
             image = Bitmap.createScaledBitmap(image, mFaviconSize, mFaviconSize, false);
             mFavicon.setImageBitmap(image);
         } else {
-            mFavicon.setImageResource(R.drawable.favicon);
+            mFavicon.setImageBitmap(null);
         }
     }
     
@@ -1179,6 +1194,14 @@ public class BrowserToolbar extends GeckoRelativeLayout
 
     public void setOnFilterListener(OnFilterListener listener) {
         mFilterListener = listener;
+    }
+
+    public void setOnStartEditingListener(OnStartEditingListener listener) {
+        mStartEditingListener = listener;
+    }
+
+    public void setOnStopEditingListener(OnStopEditingListener listener) {
+        mStopEditingListener = listener;
     }
 
     private void showSoftInput() {
@@ -1267,6 +1290,10 @@ public class BrowserToolbar extends GeckoRelativeLayout
 
         mUrlEditText.setText(url != null ? url : "");
         mIsEditing = true;
+
+        if (mStartEditingListener != null) {
+            mStartEditingListener.onStartEditing();
+        }
 
         final int entryTranslation = getUrlBarEntryTranslation();
         final int curveTranslation = getUrlBarCurveTranslation();
@@ -1376,6 +1403,10 @@ public class BrowserToolbar extends GeckoRelativeLayout
         }
         mIsEditing = false;
 
+        if (mStopEditingListener != null) {
+            mStopEditingListener.onStopEditing();
+        }
+
         if (HardwareUtils.isTablet() || Build.VERSION.SDK_INT < 11) {
             hideUrlEditContainer();
 
@@ -1473,6 +1504,10 @@ public class BrowserToolbar extends GeckoRelativeLayout
         }
 
         mGo.setVisibility(View.VISIBLE);
+
+        if (InputMethods.shouldDisableUrlBarUpdate(mUrlEditText.getContext())) {
+            return;
+        }
 
         int imageResource = R.drawable.ic_url_bar_go;
         String contentDescription = mActivity.getString(R.string.go);

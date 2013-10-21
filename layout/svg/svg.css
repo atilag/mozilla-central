@@ -21,13 +21,13 @@ svg:not(:root), symbol, image, marker, pattern, foreignObject {
 
 @media all and (-moz-is-glyph) {
  :root {
-   fill: -moz-objectfill;
-   fill-opacity: -moz-objectfillopacity;
-   stroke: -moz-objectstroke;
-   stroke-opacity: -moz-objectstrokeopacity;
-   stroke-width: -moz-objectValue;
-   stroke-dasharray: -moz-objectValue;
-   stroke-dashoffset: -moz-objectValue;
+   fill: context-fill;
+   fill-opacity: context-fill-opacity;
+   stroke: context-stroke;
+   stroke-opacity: context-stroke-opacity;
+   stroke-width: context-value;
+   stroke-dasharray: context-value;
+   stroke-dashoffset: context-value;
  }
 }
 
@@ -51,7 +51,7 @@ foreignObject {
   text-indent: 0;
 }
 
-/* Set |transform-origin:0% 0%;| for all SVG elements except outer-<svg>,
+/* Set |transform-origin:0 0;| for all SVG elements except outer-<svg>,
    noting that 'svg' as a child of 'foreignObject' counts as outer-<svg>.
 */
 *:not(svg),
@@ -66,4 +66,11 @@ foreignObject {
 
 *[xml|space=preserve] {
   white-space: -moz-pre-discard-newlines;
+}
+
+*|*::-moz-svg-marker-anon-child {
+  clip-path: inherit;
+  filter: inherit;
+  mask: inherit;
+  opacity: inherit;
 }

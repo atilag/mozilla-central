@@ -60,6 +60,7 @@ static char *RCSSTRING __UNUSED__="$Id: ice_candidate.c,v 1.2 2008/04/28 17:59:0
 #include "ice_reg.h"
 #include "ice_util.h"
 #include "nr_socket_turn.h"
+#include "nr_socket.h"
 
 static int next_automatic_preference = 224;
 
@@ -210,8 +211,8 @@ int nr_ice_peer_peer_rflx_candidate_create(nr_ice_ctx *ctx,char *label, nr_ice_c
     cand->stream=comp->stream;
 
 
-    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): creating candidate %s with type %d",
-      ctx->label,label,ctype);
+    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s)/CAND(%s): creating candidate with type %s",
+      ctx->label,label,nr_ctype_name(ctype));
 
     if(r=nr_transport_addr_copy(&cand->base,addr))
       ABORT(r);
@@ -382,8 +383,12 @@ int nr_ice_candidate_compute_priority(nr_ice_candidate *cand)
     }
     else {
       char key_of_interface[MAXIFNAME + 41];
+      nr_transport_addr addr;
 
-      if(r=nr_transport_addr_fmt_ifname_addr_string(&cand->base,key_of_interface,
+      if(r=nr_socket_getaddr(cand->isock->sock, &addr))
+        ABORT(r);
+
+      if(r=nr_transport_addr_fmt_ifname_addr_string(&addr,key_of_interface,
          sizeof(key_of_interface))) {
         ABORT(r);
       }
@@ -411,8 +416,8 @@ static void nr_ice_candidate_fire_ready_cb(NR_SOCKET s, int how, void *cb_arg)
   {
     nr_ice_candidate *cand = cb_arg;
 
-    cand->ready_cb(0, 0, cand->ready_cb_arg);
     cand->ready_cb_timer = 0;
+    cand->ready_cb(0, 0, cand->ready_cb_arg);
   }
 
 int nr_ice_candidate_initialize(nr_ice_candidate *cand, NR_async_cb ready_cb, void *cb_arg)
@@ -658,7 +663,7 @@ static void nr_ice_srvrflx_stun_finished_cb(NR_SOCKET sock, int how, void *cb_ar
     int _status;
     nr_ice_candidate *cand=cb_arg;
 
-    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): %s for %s",cand->ctx->label,__FUNCTION__,cand->label);
+    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s)/CAND(%s): %s",cand->ctx->label,cand->label,__FUNCTION__);
 
     /* Deregister to suppress duplicates */
     if(cand->u.srvrflx.stun_handle){ /* This test because we might have failed before CB registered */
@@ -711,7 +716,7 @@ static void nr_ice_turn_allocated_cb(NR_SOCKET s, int how, void *cb_arg)
                                relay_addr.as_string,")",NULL))
           ABORT(r);
 
-        r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Switching from TURN (%s) to RELAY (%s)",cand->u.relayed.turn->label,cand->label,label);
+        r_log(LOG_ICE,LOG_DEBUG,"TURN-CLIENT(%s)/CAND(%s): Switching from TURN to RELAY (%s)",cand->u.relayed.turn->label,cand->label,label);
 
         /* Copy the relayed address into the candidate addr and
            into the candidate base. Note that we need to keep the
@@ -721,7 +726,7 @@ static void nr_ice_turn_allocated_cb(NR_SOCKET s, int how, void *cb_arg)
         if (r=nr_transport_addr_copy_keep_ifname(&cand->base, &relay_addr))  /* Need to keep interface for priority calculation */
           ABORT(r);
 
-        r_log(LOG_ICE,LOG_DEBUG,"ICE-CANDIDATE(%s): base=%s, candidate=%s", cand->label, cand->base.as_string, cand->addr.as_string);
+        r_log(LOG_ICE,LOG_DEBUG,"ICE(%s)/CAND(%s): new relay base=%s addr=%s", cand->ctx->label, cand->label, cand->base.as_string, cand->addr.as_string);
 
         RFREE(cand->label);
         cand->label=label;

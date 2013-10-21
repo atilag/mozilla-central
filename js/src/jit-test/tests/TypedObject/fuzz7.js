@@ -1,4 +1,4 @@
-if (!this.hasOwnProperty("Type"))
-  exit(0);
+if (!this.hasOwnProperty("TypedObject"))
+  quit();
 
-new StructType(RegExp());
+new TypedObject.StructType(RegExp());

@@ -101,7 +101,7 @@ public class ReadingListPage extends HomeFragment {
                 }
 
                 String url = c.getString(c.getColumnIndexOrThrow(URLColumns.URL));
-                url = ReaderModeUtils.getAboutReaderForUrl(url, true);
+                url = ReaderModeUtils.getAboutReaderForUrl(url);
 
                 // This item is a TwoLinePageRow, so we allow switch-to-tab.
                 mUrlOpenListener.onUrlOpen(url, EnumSet.of(OnUrlOpenListener.Flags.ALLOW_SWITCH_TO_TAB));
@@ -198,7 +198,7 @@ public class ReadingListPage extends HomeFragment {
      */
     private class ReadingListAdapter extends CursorAdapter {
         public ReadingListAdapter(Context context, Cursor cursor) {
-            super(context, cursor);
+            super(context, cursor, 0);
         }
 
         @Override
@@ -219,33 +219,18 @@ public class ReadingListPage extends HomeFragment {
     private class CursorLoaderCallbacks implements LoaderCallbacks<Cursor> {
         @Override
         public Loader<Cursor> onCreateLoader(int id, Bundle args) {
-            switch(id) {
-                case LOADER_ID_READING_LIST:
-                    return new ReadingListLoader(getActivity());
-            }
-            return null;
+            return new ReadingListLoader(getActivity());
         }
 
         @Override
         public void onLoadFinished(Loader<Cursor> loader, Cursor c) {
-            final int loaderId = loader.getId();
-            switch(loaderId) {
-                case LOADER_ID_READING_LIST:
-                    mAdapter.swapCursor(c);
-                    break;
-           }
-
-           updateUiFromCursor(c);
+            mAdapter.swapCursor(c);
+            updateUiFromCursor(c);
         }
 
         @Override
         public void onLoaderReset(Loader<Cursor> loader) {
-            final int loaderId = loader.getId();
-            switch(loaderId) {
-                case LOADER_ID_READING_LIST:
-                    mAdapter.swapCursor(null);
-                    break;
-            }
+            mAdapter.swapCursor(null);
         }
     }
 }

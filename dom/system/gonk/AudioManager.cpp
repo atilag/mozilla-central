@@ -33,6 +33,8 @@
 #include "nsJSUtils.h"
 #include "nsCxPusher.h"
 #include "nsThreadUtils.h"
+#include "nsServiceManagerUtils.h"
+#include "nsComponentManagerUtils.h"
 
 using namespace mozilla::dom::gonk;
 using namespace android;
@@ -136,7 +138,8 @@ public:
       static_cast<AudioManager *>(audioManager.get())->SetStreamVolumeIndex(
         AUDIO_STREAM_BLUETOOTH_SCO, volIndex);
     } else {
-      MOZ_ASSERT("unexpected audio channel for volume control");
+      MOZ_ASSUME_UNREACHABLE("unexpected audio channel for initializing "
+                             "volume control");
     }
 
     return NS_OK;
@@ -312,7 +315,7 @@ AudioManager::Observe(nsISupports* aSubject,
       return NS_OK;
     }
     nsDependentJSString keyStr;
-    if (!keyStr.init(cx, jsKey) || keyStr.EqualsLiteral("audio.volume.bt_sco")) {
+    if (!keyStr.init(cx, jsKey) || !keyStr.EqualsLiteral("audio.volume.bt_sco")) {
       return NS_OK;
     }
 
@@ -468,6 +471,14 @@ AudioManager::SetPhoneState(int32_t aState)
   if (mPhoneState == aState) {
     return NS_OK;
   }
+
+  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+  if (obs) {
+    nsString state;
+    state.AppendInt(aState);
+    obs->NotifyObservers(nullptr, "phone-state-changed", state.get());
+  }
+
   // follow the switch audio path logic for android, Bug 897364
   int usage;
   GetForceForUse(nsIAudioManager::USE_COMMUNICATION, &usage);
@@ -500,7 +511,7 @@ AudioManager::SetPhoneState(int32_t aState)
     }
 
     // Telephony can always play.
-    bool canPlay;
+    int32_t canPlay;
     mPhoneAudioAgent->StartPlaying(&canPlay);
   }
 

@@ -60,7 +60,8 @@ const CONFIG_SEND_REPORT_DEFAULT_YES = 2;
 const CONFIG_SEND_REPORT_ALWAYS      = 3;
 
 const TIME_TO_BUFFER_MMS_REQUESTS    = 30000;
-const TIME_TO_RELEASE_MMS_CONNECTION = 30000;
+const PREF_TIME_TO_RELEASE_MMS_CONNECTION =
+  Services.prefs.getIntPref("network.gonk.ms-release-mms-connection");
 
 const PREF_RETRIEVAL_MODE      = 'dom.mms.retrieval_mode';
 const RETRIEVAL_MODE_MANUAL    = "manual";
@@ -247,7 +248,9 @@ XPCOMUtils.defineLazyGetter(this, "gMmsConnection", function () {
      *         otherwise.
      */
     acquire: function acquire(callback) {
+      this.refCount++;
       this.connectTimer.cancel();
+      this.disconnectTimer.cancel();
 
       // If the MMS network is not yet connected, buffer the
       // MMS request and try to setup the MMS network first.
@@ -279,8 +282,6 @@ XPCOMUtils.defineLazyGetter(this, "gMmsConnection", function () {
         return false;
       }
 
-      this.refCount++;
-
       callback(true, _HTTP_STATUS_ACQUIRE_CONNECTION_SUCCESS);
       return true;
     },
@@ -293,11 +294,17 @@ XPCOMUtils.defineLazyGetter(this, "gMmsConnection", function () {
       if (this.refCount <= 0) {
         this.refCount = 0;
 
+        // The waiting is too small, just skip the timer creation.
+        if (PREF_TIME_TO_RELEASE_MMS_CONNECTION < 1000) {
+          this.onDisconnectTimerTimeout();
+          return;
+        }
+
         // Set a timer to delay the release of MMS network connection,
         // since the MMS requests often come consecutively in a short time.
         this.disconnectTimer.
           initWithCallback(this.onDisconnectTimerTimeout.bind(this),
-                           TIME_TO_RELEASE_MMS_CONNECTION,
+                           PREF_TIME_TO_RELEASE_MMS_CONNECTION,
                            Ci.nsITimer.TYPE_ONE_SHOT);
       }
     },
@@ -547,12 +554,6 @@ XPCOMUtils.defineLazyGetter(this, "gMmsTransactionHelper", function () {
         }
 
         // Setup event listeners
-        xhr.onerror = function () {
-          if (DEBUG) debug("xhr error, response headers: " +
-                           xhr.getAllResponseHeaders());
-          releaseMmsConnectionAndCallback(xhr.status, null);
-        };
-
         xhr.onreadystatechange = function () {
           if (xhr.readyState != Ci.nsIXMLHttpRequest.DONE) {
             return;
@@ -1231,9 +1232,24 @@ MmsService.prototype = {
     return config >= CONFIG_SEND_REPORT_DEFAULT_YES;
   },
 
-  getMsisdn: function getMsisdn() {
+  /**
+   * Get phone number from iccInfo.
+   *
+   * If the icc card is gsm card, the phone number is in msisdn.
+   * @see nsIDOMMozGsmIccInfo
+   *
+   * Otherwise, the phone number is in mdn.
+   * @see nsIDOMMozCdmaIccInfo
+   */
+  getPhoneNumber: function getPhoneNumber() {
     let iccInfo = gRadioInterface.rilContext.iccInfo;
-    let number = iccInfo ? iccInfo.msisdn : null;
+
+    if (!iccInfo) {
+      return null;
+    }
+
+    let number = (iccInfo instanceof Ci.nsIDOMMozGsmIccInfo)
+               ? iccInfo.msisdn : iccInfo.mdn;
 
     // Workaround an xpconnect issue with undefined string objects.
     // See bug 808220
@@ -1284,7 +1300,7 @@ MmsService.prototype = {
       intermediate.sender = "anonymous";
     }
     intermediate.receivers = [];
-    intermediate.msisdn = this.getMsisdn();
+    intermediate.phoneNumber = this.getPhoneNumber();
     return intermediate;
   },
 
@@ -1770,7 +1786,7 @@ MmsService.prototype = {
     aMessage["type"] = "mms";
     aMessage["timestamp"] = Date.now();
     aMessage["receivers"] = receivers;
-    aMessage["sender"] = this.getMsisdn();
+    aMessage["sender"] = this.getPhoneNumber();
     try {
       aMessage["deliveryStatusRequested"] =
         Services.prefs.getBoolPref("dom.mms.requestStatusReport");

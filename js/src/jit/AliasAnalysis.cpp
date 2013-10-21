@@ -58,7 +58,7 @@ class AliasSetIterator
 AliasAnalysis::AliasAnalysis(MIRGenerator *mir, MIRGraph &graph)
   : mir(mir),
     graph_(graph),
-    loop_(NULL)
+    loop_(nullptr)
 {
 }
 
@@ -73,9 +73,13 @@ BlockMightReach(MBasicBlock *src, MBasicBlock *dest)
         switch (src->numSuccessors()) {
           case 0:
             return false;
-          case 1:
-            src = src->getSuccessor(0);
+          case 1: {
+            MBasicBlock *successor = src->getSuccessor(0);
+            if (successor->id() <= src->id())
+                return true; // Don't iloop.
+            src = successor;
             break;
+          }
           default:
             return true;
         }
@@ -246,6 +250,6 @@ AliasAnalysis::analyze()
         }
     }
 
-    JS_ASSERT(loop_ == NULL);
+    JS_ASSERT(loop_ == nullptr);
     return true;
 }

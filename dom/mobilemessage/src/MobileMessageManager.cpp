@@ -11,7 +11,7 @@
 #include "nsIObserverService.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
-#include "Constants.h"
+#include "mozilla/dom/mobilemessage/Constants.h" // For MessageType
 #include "nsIDOMMozSmsEvent.h"
 #include "nsIDOMMozMmsEvent.h"
 #include "nsIDOMMozSmsMessage.h"
@@ -136,14 +136,16 @@ MobileMessageManager::Send(JSContext* aCx, JS::Handle<JSObject*> aGlobal,
   NS_ENSURE_SUCCESS(rv, rv);
 
   JS::Rooted<JSObject*> global(aCx, aGlobal);
+  JS::Rooted<JS::Value> rval(aCx);
   rv = nsContentUtils::WrapNative(aCx, global,
                                   static_cast<nsIDOMDOMRequest*>(request.get()),
-                                  aRequest);
+                                  &rval);
   if (NS_FAILED(rv)) {
     NS_ERROR("Failed to create the js value!");
     return rv;
   }
 
+  *aRequest = rval;
   return NS_OK;
 }
 

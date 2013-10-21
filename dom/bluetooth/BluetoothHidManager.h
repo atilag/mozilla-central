@@ -8,11 +8,10 @@
 #define mozilla_dom_bluetooth_bluetoothhidmanager_h__
 
 #include "BluetoothCommon.h"
+#include "BluetoothProfileController.h"
 #include "BluetoothProfileManagerBase.h"
 
 BEGIN_BLUETOOTH_NAMESPACE
-
-class BluetoothReplyRunnable;
 
 class BluetoothHidManager : public BluetoothProfileManagerBase
 {
@@ -37,6 +36,12 @@ public:
   virtual void OnConnect(const nsAString& aErrorStr) MOZ_OVERRIDE;
   virtual void OnDisconnect(const nsAString& aErrorStr) MOZ_OVERRIDE;
 
+  virtual void GetName(nsACString& aName)
+  {
+    aName.AssignLiteral("HID");
+  }
+
+  // HID-specific functions
   void HandleInputPropertyChanged(const BluetoothSignal& aSignal);
 
 private:
@@ -50,7 +55,7 @@ private:
   // data member
   bool mConnected;
   nsString mDeviceAddress;
-  BluetoothProfileController* mController;
+  nsRefPtr<BluetoothProfileController> mController;
 };
 
 END_BLUETOOTH_NAMESPACE

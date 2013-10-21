@@ -8,6 +8,7 @@
 #define mozilla_dom_bluetooth_bluetootha2dpmanager_h__
 
 #include "BluetoothCommon.h"
+#include "BluetoothProfileController.h"
 #include "BluetoothProfileManagerBase.h"
 
 BEGIN_BLUETOOTH_NAMESPACE
@@ -44,10 +45,15 @@ public:
   virtual void OnConnect(const nsAString& aErrorStr) MOZ_OVERRIDE;
   virtual void OnDisconnect(const nsAString& aErrorStr) MOZ_OVERRIDE;
 
-  // A2DP member functions
+  virtual void GetName(nsACString& aName)
+  {
+    aName.AssignLiteral("A2DP");
+  }
+
+  // A2DP-specific functions
   void HandleSinkPropertyChanged(const BluetoothSignal& aSignal);
 
-  // AVRCP member functions
+  // AVRCP-specific functions
   void SetAvrcpConnected(bool aConnected);
   bool IsAvrcpConnected();
   void UpdateMetaData(const nsAString& aTitle,
@@ -71,12 +77,10 @@ private:
   bool Init();
 
   void HandleShutdown();
-
-  void DispatchConnectionStatusChanged();
   void NotifyConnectionStatusChanged();
 
   nsString mDeviceAddress;
-  BluetoothProfileController* mController;
+  nsRefPtr<BluetoothProfileController> mController;
 
   // A2DP data member
   bool mA2dpConnected;

@@ -288,9 +288,17 @@ EventLoopStack.prototype = {
    * The URL of the debuggee who pushed the event loop on top of the stack.
    */
   get lastPausedUrl() {
-    return this.size > 0
-      ? this._inspector.lastNestRequestor.url
-      : null;
+    let url = null;
+    if (this.size > 0) {
+      try {
+        url = this._inspector.lastNestRequestor.url
+      } catch (e) {
+        // The tab's URL getter may throw if the tab is destroyed by the time
+        // this code runs, but we don't really care at this point.
+        dumpn(e);
+      }
+    }
+    return url;
   },
 
   /**
@@ -406,7 +414,6 @@ function ThreadActor(aHooks, aGlobal)
 {
   this._state = "detached";
   this._frameActors = [];
-  this._environmentActors = [];
   this._hooks = aHooks;
   this.global = aGlobal;
   this._nestedEventLoops = new EventLoopStack({
@@ -458,6 +465,45 @@ ThreadActor.prototype = {
                                         this._allowSource, this.onNewSource);
     }
     return this._sources;
+  },
+
+  get youngestFrame() {
+    if (!this.state == "paused") {
+      return null;
+    }
+    return this.dbg.getNewestFrame();
+  },
+
+  _prettyPrintWorker: null,
+  get prettyPrintWorker() {
+    if (!this._prettyPrintWorker) {
+      this._prettyPrintWorker = new ChromeWorker(
+        "resource://gre/modules/devtools/server/actors/pretty-print-worker.js");
+
+      this._prettyPrintWorker.addEventListener(
+        "error", this._onPrettyPrintError, false);
+
+      if (wantLogging) {
+        this._prettyPrintWorker.addEventListener("message", this._onPrettyPrintMsg, false);
+
+        const postMsg = this._prettyPrintWorker.postMessage;
+        this._prettyPrintWorker.postMessage = data => {
+          dumpn("Sending message to prettyPrintWorker: "
+                + JSON.stringify(data, null, 2) + "\n");
+          return postMsg.call(this._prettyPrintWorker, data);
+        };
+      }
+    }
+    return this._prettyPrintWorker;
+  },
+
+  _onPrettyPrintError: function (error) {
+    reportError(new Error(error));
+  },
+
+  _onPrettyPrintMsg: function ({ data }) {
+    dumpn("Received message from prettyPrintWorker: "
+          + JSON.stringify(data, null, 2) + "\n");
   },
 
   /**
@@ -590,6 +636,15 @@ ThreadActor.prototype = {
     this._state = "exited";
 
     this.clearDebuggees();
+
+    if (this._prettyPrintWorker) {
+      this._prettyPrintWorker.removeEventListener(
+        "error", this._onPrettyPrintError, false);
+      this._prettyPrintWorker.removeEventListener(
+        "message", this._onPrettyPrintMsg, false);
+      this._prettyPrintWorker.terminate();
+      this._prettyPrintWorker = null;
+    }
 
     if (!this.dbg) {
       return;
@@ -873,7 +928,9 @@ ThreadActor.prototype = {
               this.dbg.onEnterFrame = onEnterFrame;
               // Fall through.
             case "next":
-              stepFrame.onStep = onStep;
+              if (stepFrame.script) {
+                  stepFrame.onStep = onStep;
+              }
               stepFrame.onPop = onPop;
               break;
             case "finish":
@@ -934,7 +991,7 @@ ThreadActor.prototype = {
     // In case of multiple nested event loops (due to multiple debuggers open in
     // different tabs or multiple debugger clients connected to the same tab)
     // only allow resumption in a LIFO order.
-    if (this._nestedEventLoops.size
+    if (this._nestedEventLoops.size && this._nestedEventLoops.lastPausedUrl
         && this._nestedEventLoops.lastPausedUrl !== this._hooks.url) {
       return {
         error: "wrongOrder",
@@ -1129,10 +1186,6 @@ ThreadActor.prototype = {
                message: "cannot access the environment of this frame." };
     }
 
-    // We'll clobber the youngest frame if the eval causes a pause, so
-    // save our frame now to be restored after eval returns.
-    // XXX: or we could just start using dbg.getNewestFrame() now that it
-    // works as expected.
     let youngest = this.youngestFrame;
 
     // Put ourselves back in the running state and inform the client.
@@ -1181,7 +1234,7 @@ ThreadActor.prototype = {
       let promise = this.sources.getOriginalLocation(form.where)
         .then((aOrigLocation) => {
           form.where = aOrigLocation;
-          let source = this.sources.source(form.where.url);
+          let source = this.sources.source({ url: form.where.url });
           if (source) {
             form.source = source.form();
           }
@@ -1688,10 +1741,6 @@ ThreadActor.prototype = {
 
     this._state = "paused";
 
-    // Save the pause frame (if any) as the youngest frame for
-    // stack viewing.
-    this.youngestFrame = aFrame;
-
     // Create the actor pool that will hold the pause actor and its
     // children.
     dbg_assert(!this._pausePool, "No pause pool should exist yet");
@@ -1733,7 +1782,6 @@ ThreadActor.prototype = {
 
     this._pausePool = null;
     this._pauseActor = null;
-    this.youngestFrame = null;
 
     return { from: this.actorID, type: "resumed" };
   },
@@ -1806,7 +1854,6 @@ ThreadActor.prototype = {
     }
 
     let actor = new EnvironmentActor(aEnvironment, this);
-    this._environmentActors.push(actor);
     aPool.addActor(actor);
     aEnvironment.actor = actor;
 
@@ -2292,17 +2339,32 @@ PauseScopedActor.prototype = {
 /**
  * A SourceActor provides information about the source of a script.
  *
- * @param aUrl String
+ * @param String url
  *        The url of the source we are representing.
- * @param aThreadActor ThreadActor
+ * @param ThreadActor thread
  *        The current thread actor.
- * @param aSourceMap SourceMapConsumer
+ * @param SourceMapConsumer sourceMap
  *        Optional. The source map that introduced this source, if available.
+ * @param String generatedSource
+ *        Optional, passed in when aSourceMap is also passed in. The generated
+ *        source url that introduced this source.
+ * @param String text
+ *        Optional. The content text of this source, if immediately available.
+ * @param String contentType
+ *        Optional. The content type of this source, if immediately available.
  */
-function SourceActor(aUrl, aThreadActor, aSourceMap=null) {
-  this._threadActor = aThreadActor;
-  this._url = aUrl;
-  this._sourceMap = aSourceMap;
+function SourceActor({ url, thread, sourceMap, generatedSource, text,
+                       contentType }) {
+  this._threadActor = thread;
+  this._url = url;
+  this._sourceMap = sourceMap;
+  this._generatedSource = generatedSource;
+  this._text = text;
+  this._contentType = contentType;
+
+  this.onSource = this.onSource.bind(this);
+  this._invertSourceMap = this._invertSourceMap.bind(this);
+  this._saveMap = this._saveMap.bind(this);
 }
 
 SourceActor.prototype = {
@@ -2311,6 +2373,10 @@ SourceActor.prototype = {
 
   get threadActor() this._threadActor,
   get url() this._url,
+
+  get prettyPrintWorker() {
+    return this.threadActor.prettyPrintWorker;
+  },
 
   form: function SA_form() {
     return {
@@ -2321,33 +2387,38 @@ SourceActor.prototype = {
     };
   },
 
-  disconnect: function LSA_disconnect() {
+  disconnect: function SA_disconnect() {
     if (this.registeredPool && this.registeredPool.sourceActors) {
       delete this.registeredPool.sourceActors[this.actorID];
     }
+  },
+
+  _getSourceText: function SA__getSourceText() {
+    const toResolvedContent = t => resolve({
+      content: t,
+      contentType: this._contentType
+    });
+
+    let sc;
+    if (this._sourceMap && (sc = this._sourceMap.sourceContentFor(this._url))) {
+      return toResolvedContent(sc);
+    }
+
+    if (this._text) {
+      return toResolvedContent(this._text);
+    }
+
+    // XXX bug 865252: Don't load from the cache if this is a source mapped
+    // source because we can't guarantee that the cache has the most up to date
+    // content for this source like we can if it isn't source mapped.
+    return fetch(this._url, { loadFromCache: !this._sourceMap });
   },
 
   /**
    * Handler for the "source" packet.
    */
   onSource: function SA_onSource(aRequest) {
-    let sourceContent = null;
-    if (this._sourceMap) {
-      sourceContent = this._sourceMap.sourceContentFor(this._url);
-    }
-
-    if (sourceContent) {
-      return {
-        from: this.actorID,
-        source: this.threadActor.createValueGrip(
-          sourceContent, this.threadActor.threadLifetimePool)
-      };
-    }
-
-    // XXX bug 865252: Don't load from the cache if this is a source mapped
-    // source because we can't guarantee that the cache has the most up to date
-    // content for this source like we can if it isn't source mapped.
-    return fetch(this._url, { loadFromCache: !this._sourceMap })
+    return this._getSourceText()
       .then(({ content, contentType }) => {
         return {
           from: this.actorID,
@@ -2365,6 +2436,151 @@ SourceActor.prototype = {
             + safeErrorString(aError)
         };
       });
+  },
+
+  /**
+   * Handler for the "prettyPrint" packet.
+   */
+  onPrettyPrint: function ({ indent }) {
+    return this._getSourceText()
+      .then(this._parseAST)
+      .then(this._sendToPrettyPrintWorker(indent))
+      .then(this._invertSourceMap)
+      .then(this._saveMap)
+      .then(this.onSource)
+      .then(null, error => ({
+        from: this.actorID,
+        error: "prettyPrintError",
+        message: DevToolsUtils.safeErrorString(error)
+      }));
+  },
+
+  /**
+   * Parse the source content into an AST.
+   */
+  _parseAST: function SA__parseAST({ content}) {
+    return Reflect.parse(content);
+  },
+
+  /**
+   * Return a function that sends a request to the pretty print worker, waits on
+   * the worker's response, and then returns the pretty printed code.
+   *
+   * @param Number aIndent
+   *        The number of spaces to indent by the code by, when we send the
+   *        request to the pretty print worker.
+   * @returns Function
+   *          Returns a function which takes an AST, and returns a promise that
+   *          is resolved with `{ code, mappings }` where `code` is the pretty
+   *          printed code, and `mappings` is an array of source mappings.
+   */
+  _sendToPrettyPrintWorker: function SA__sendToPrettyPrintWorker(aIndent) {
+    return aAST => {
+      const deferred = promise.defer();
+      const id = Math.random();
+
+      const onReply = ({ data }) => {
+        if (data.id !== id) {
+          return;
+        }
+        this.prettyPrintWorker.removeEventListener("message", onReply, false);
+
+        if (data.error) {
+          deferred.reject(new Error(data.error));
+        } else {
+          deferred.resolve(data);
+        }
+      };
+
+      this.prettyPrintWorker.addEventListener("message", onReply, false);
+      this.prettyPrintWorker.postMessage({
+        id: id,
+        url: this._url,
+        indent: aIndent,
+        ast: aAST
+      });
+
+      return deferred.promise;
+    };
+  },
+
+  /**
+   * Invert a source map. So if a source map maps from a to b, return a new
+   * source map from b to a. We need to do this because the source map we get
+   * from _generatePrettyCodeAndMap goes the opposite way we want it to for
+   * debugging.
+   *
+   * Note that the source map is modified in place.
+   */
+  _invertSourceMap: function SA__invertSourceMap({ code, mappings }) {
+    const generator = new SourceMapGenerator({ file: this._url });
+    return DevToolsUtils.yieldingEach(mappings, m => {
+      let mapping = {
+        generated: {
+          line: m.generatedLine,
+          column: m.generatedColumn
+        }
+      };
+      if (m.source) {
+        mapping.source = m.source;
+        mapping.original = {
+          line: m.originalLine,
+          column: m.originalColumn
+        };
+        mapping.name = m.name;
+      }
+      generator.addMapping(mapping);
+    }).then(() => {
+      generator.setSourceContent(this._url, code);
+      const consumer = SourceMapConsumer.fromSourceMap(generator);
+
+      // XXX bug 918802: Monkey punch the source map consumer, because iterating
+      // over all mappings and inverting each of them, and then creating a new
+      // SourceMapConsumer is slow.
+
+      const getOrigPos = consumer.originalPositionFor.bind(consumer);
+      const getGenPos = consumer.generatedPositionFor.bind(consumer);
+
+      consumer.originalPositionFor = ({ line, column }) => {
+        const location = getGenPos({
+          line: line,
+          column: column,
+          source: this._url
+        });
+        location.source = this._url;
+        return location;
+      };
+
+      consumer.generatedPositionFor = ({ line, column }) => getOrigPos({
+        line: line,
+        column: column
+      });
+
+      return {
+        code: code,
+        map: consumer
+      };
+    });
+  },
+
+  /**
+   * Save the source map back to our thread's ThreadSources object so that
+   * stepping, breakpoints, debugger statements, etc can use it. If we are
+   * pretty printing a source mapped source, we need to compose the existing
+   * source map with our new one.
+   */
+  _saveMap: function SA__saveMap({ map }) {
+    if (this._sourceMap) {
+      // Compose the source maps
+      this._sourceMap = SourceMapGenerator.fromSourceMap(this._sourceMap);
+      this._sourceMap.applySourceMap(map, this._url);
+      this._sourceMap = SourceMapConsumer.fromSourceMap(this._sourceMap);
+      this._threadActor.sources.saveSourceMap(this._sourceMap,
+                                              this._generatedSource);
+    } else {
+      this._sourceMap = map;
+      this._threadActor.sources.saveSourceMap(this._sourceMap, this._url);
+    }
   },
 
   /**
@@ -2397,7 +2613,8 @@ SourceActor.prototype = {
 SourceActor.prototype.requestTypes = {
   "source": SourceActor.prototype.onSource,
   "blackbox": SourceActor.prototype.onBlackBox,
-  "unblackbox": SourceActor.prototype.onUnblackBox
+  "unblackbox": SourceActor.prototype.onUnblackBox,
+  "prettyPrint": SourceActor.prototype.onPrettyPrint
 };
 
 
@@ -2418,6 +2635,8 @@ function ObjectActor(aObj, aThreadActor)
 ObjectActor.prototype = {
   actorPrefix: "obj",
 
+  _forcedMagicProps: false,
+
   /**
    * Returns a grip for this actor for returning in a protocol message.
    */
@@ -2435,15 +2654,22 @@ ObjectActor.prototype = {
     if (this.obj.class === "Function") {
       if (this.obj.name) {
         g.name = this.obj.name;
-      } else if (this.obj.displayName) {
+      }
+      if (this.obj.displayName) {
         g.displayName = this.obj.displayName;
       }
 
       // Check if the developer has added a de-facto standard displayName
       // property for us to use.
-      let desc = this.obj.getOwnPropertyDescriptor("displayName");
-      if (desc && desc.value && typeof desc.value == "string") {
-        g.userDisplayName = this.threadActor.createValueGrip(desc.value);
+      try {
+        let desc = this.obj.getOwnPropertyDescriptor("displayName");
+        if (desc && desc.value && typeof desc.value == "string") {
+          g.userDisplayName = this.threadActor.createValueGrip(desc.value);
+        }
+      } catch (e) {
+        // Calling getOwnPropertyDescriptor with displayName might throw
+        // with "permission denied" errors for some functions.
+        dumpn(e);
       }
 
       // Add source location information.
@@ -2467,6 +2693,27 @@ ObjectActor.prototype = {
   },
 
   /**
+   * Force the magic Error properties to appear.
+   */
+  _forceMagicProperties: function OA__forceMagicProperties() {
+    if (this._forcedMagicProps) {
+      return;
+    }
+
+    const MAGIC_ERROR_PROPERTIES = [
+      "message", "stack", "fileName", "lineNumber", "columnNumber"
+    ];
+
+    if (this.obj.class.endsWith("Error")) {
+      for (let property of MAGIC_ERROR_PROPERTIES) {
+        this._propertyDescriptor(property);
+      }
+    }
+
+    this._forcedMagicProps = true;
+  },
+
+  /**
    * Handle a protocol request to provide the names of the properties defined on
    * the object and not its prototype.
    *
@@ -2474,6 +2721,7 @@ ObjectActor.prototype = {
    *        The protocol request object.
    */
   onOwnPropertyNames: function OA_onOwnPropertyNames(aRequest) {
+    this._forceMagicProperties();
     return { from: this.actorID,
              ownPropertyNames: this.obj.getOwnPropertyNames() };
   },
@@ -2486,6 +2734,7 @@ ObjectActor.prototype = {
    *        The protocol request object.
    */
   onPrototypeAndProperties: function OA_onPrototypeAndProperties(aRequest) {
+    this._forceMagicProperties();
     let ownProperties = Object.create(null);
     let names;
     try {
@@ -2770,6 +3019,29 @@ ObjectActor.prototype = {
     this.release();
     return {};
   },
+
+  /**
+   * Handle a protocol request to provide the lexical scope of a function.
+   *
+   * @param aRequest object
+   *        The protocol request object.
+   */
+  onScope: function OA_onScope(aRequest) {
+    if (this.obj.class !== "Function") {
+      return { error: "objectNotFunction",
+               message: "scope request is only valid for object grips with a" +
+                        " 'Function' class." };
+    }
+
+    let envActor = this.threadActor.createEnvironmentActor(this.obj.environment,
+                                                           this.registeredPool);
+    if (!envActor) {
+      return { error: "notDebuggee",
+               message: "cannot access the environment of this function." };
+    }
+
+    return { from: this.actorID, scope: envActor.form() };
+  }
 };
 
 ObjectActor.prototype.requestTypes = {
@@ -2781,6 +3053,7 @@ ObjectActor.prototype.requestTypes = {
   "ownPropertyNames": ObjectActor.prototype.onOwnPropertyNames,
   "decompile": ObjectActor.prototype.onDecompile,
   "release": ObjectActor.prototype.onRelease,
+  "scope": ObjectActor.prototype.onScope,
 };
 
 
@@ -2799,6 +3072,7 @@ update(PauseScopedObjectActor.prototype, ObjectActor.prototype);
 
 update(PauseScopedObjectActor.prototype, {
   constructor: PauseScopedObjectActor,
+  actorPrefix: "pausedobj",
 
   onOwnPropertyNames:
     PauseScopedActor.withPaused(ObjectActor.prototype.onOwnPropertyNames),
@@ -2815,29 +3089,6 @@ update(PauseScopedObjectActor.prototype, {
 
   onParameterNames:
     PauseScopedActor.withPaused(ObjectActor.prototype.onParameterNames),
-
-  /**
-   * Handle a protocol request to provide the lexical scope of a function.
-   *
-   * @param aRequest object
-   *        The protocol request object.
-   */
-  onScope: PauseScopedActor.withPaused(function OA_onScope(aRequest) {
-    if (this.obj.class !== "Function") {
-      return { error: "objectNotFunction",
-               message: "scope request is only valid for object grips with a" +
-                        " 'Function' class." };
-    }
-
-    let envActor = this.threadActor.createEnvironmentActor(this.obj.environment,
-                                                           this.registeredPool);
-    if (!envActor) {
-      return { error: "notDebuggee",
-               message: "cannot access the environment of this function." };
-    }
-
-    return { from: this.actorID, scope: envActor.form() };
-  }),
 
   /**
    * Handle a protocol request to promote a pause-lifetime grip to a
@@ -2869,7 +3120,6 @@ update(PauseScopedObjectActor.prototype, {
 });
 
 update(PauseScopedObjectActor.prototype.requestTypes, {
-  "scope": PauseScopedObjectActor.prototype.onScope,
   "threadGrip": PauseScopedObjectActor.prototype.onThreadGrip,
 });
 
@@ -3312,14 +3562,10 @@ EnvironmentActor.prototype = {
 
     try {
       this.obj.setVariable(aRequest.name, aRequest.value);
-    } catch (e) {
-      if (e instanceof Debugger.DebuggeeWouldRun) {
+    } catch (e if e instanceof Debugger.DebuggeeWouldRun) {
         return { error: "threadWouldRun",
                  cause: e.cause ? e.cause : "setter",
                  message: "Assigning a value would cause the debuggee to run" };
-      }
-      // This should never happen, so let it complain loudly if it does.
-      throw e;
     }
     return { from: this.actorID };
   },
@@ -3475,37 +3721,81 @@ ThreadSources._blackBoxedSources = new Set();
 
 ThreadSources.prototype = {
   /**
-   * Return the source actor representing |aURL|, creating one if none
-   * exists already. Returns null if |aURL| is not allowed by the 'allow'
+   * Return the source actor representing |url|, creating one if none
+   * exists already. Returns null if |url| is not allowed by the 'allow'
    * predicate.
    *
    * Right now this takes a URL, but in the future it should
    * take a Debugger.Source. See bug 637572.
    *
-   * @param String aURL
+   * @param String url
    *        The source URL.
-   * @param optional SourceMapConsumer aSourceMap
+   * @param optional SourceMapConsumer sourceMap
    *        The source map that introduced this source, if any.
+   * @param optional String generatedSource
+   *        The generated source url that introduced this source via source map,
+   *        if any.
+   * @param optional String text
+   *        The text content of the source, if immediately available.
+   * @param optional String contentType
+   *        The content type of the source, if immediately available.
    * @returns a SourceActor representing the source at aURL or null.
    */
-  source: function TS_source(aURL, aSourceMap=null) {
-    if (!this._allow(aURL)) {
+  source: function TS_source({ url, sourceMap, generatedSource, text,
+                               contentType }) {
+    if (!this._allow(url)) {
       return null;
     }
 
-    if (aURL in this._sourceActors) {
-      return this._sourceActors[aURL];
+    if (url in this._sourceActors) {
+      return this._sourceActors[url];
     }
 
-    let actor = new SourceActor(aURL, this._thread, aSourceMap);
+    let actor = new SourceActor({
+      url: url,
+      thread: this._thread,
+      sourceMap: sourceMap,
+      generatedSource: generatedSource,
+      text: text,
+      contentType: contentType
+    });
     this._thread.threadLifetimePool.addActor(actor);
-    this._sourceActors[aURL] = actor;
+    this._sourceActors[url] = actor;
     try {
       this._onNewSource(actor);
     } catch (e) {
       reportError(e);
     }
     return actor;
+  },
+
+  /**
+   * Only to be used when we aren't source mapping.
+   */
+  _sourceForScript: function TS__sourceForScript(aScript) {
+    const spec = {
+      url: aScript.url
+    };
+
+    // XXX bug 915433: We can't rely on Debugger.Source.prototype.text if the
+    // source is an HTML-embedded <script> tag. Since we don't have an API
+    // implemented to detect whether this is the case, we need to be
+    // conservative and only use Debugger.Source.prototype.text if we get a
+    // normal .js file.
+    if (aScript.url) {
+      try {
+        const url = Services.io.newURI(aScript.url, null, null)
+          .QueryInterface(Ci.nsIURL);
+        if (url.fileExtension === "js") {
+          spec.contentType = "text/javascript";
+          spec.text = aScript.source.text;
+        }
+      } catch(ex) {
+        // Not a valid URI.
+      }
+    }
+
+    return this.source(spec);
   },
 
   /**
@@ -3518,23 +3808,24 @@ ThreadSources.prototype = {
    */
   sourcesForScript: function TS_sourcesForScript(aScript) {
     if (!this._useSourceMaps || !aScript.sourceMapURL) {
-      return resolve([this.source(aScript.url)].filter(isNotNull));
+      return resolve([this._sourceForScript(aScript)].filter(isNotNull));
     }
 
     return this.sourceMap(aScript)
       .then((aSourceMap) => {
         return [
-          this.source(s, aSourceMap) for (s of aSourceMap.sources)
+          this.source({ url: s,
+                        sourceMap: aSourceMap,
+                        generatedSource: aScript.url })
+          for (s of aSourceMap.sources)
         ];
       })
       .then(null, (e) => {
         reportError(e);
         delete this._sourceMapsByGeneratedSource[aScript.url];
-        return [this.source(aScript.url)];
+        return [this._sourceForScript(aScript)];
       })
-      .then(function (aSources) {
-        return aSources.filter(isNotNull);
-      });
+      .then(ss => ss.filter(isNotNull));
   },
 
   /**
@@ -3546,15 +3837,22 @@ ThreadSources.prototype = {
     dbg_assert(aScript.sourceMapURL, "Script should have a sourceMapURL");
     let sourceMapURL = this._normalize(aScript.sourceMapURL, aScript.url);
     let map = this._fetchSourceMap(sourceMapURL, aScript.url)
-      .then((aSourceMap) => {
-        for (let s of aSourceMap.sources) {
-          this._generatedUrlsByOriginalUrl[s] = aScript.url;
-          this._sourceMapsByOriginalSource[s] = resolve(aSourceMap);
-        }
-        return aSourceMap;
-      });
+      .then(aSourceMap => this.saveSourceMap(aSourceMap, aScript.url));
     this._sourceMapsByGeneratedSource[aScript.url] = map;
     return map;
+  },
+
+  /**
+   * Save the given source map so that we can use it to query source locations
+   * down the line.
+   */
+  saveSourceMap: function TS_saveSourceMap(aSourceMap, aGeneratedSource) {
+    this._sourceMapsByGeneratedSource[aGeneratedSource] = resolve(aSourceMap);
+    for (let s of aSourceMap.sources) {
+      this._generatedUrlsByOriginalUrl[s] = aGeneratedSource;
+      this._sourceMapsByOriginalSource[s] = resolve(aSourceMap);
+    }
+    return aSourceMap;
   },
 
   /**
@@ -3749,7 +4047,7 @@ function getOffsetColumn(aOffset, aScript) {
  *          Returns an object of the form { url, line, column }
  */
 function getFrameLocation(aFrame) {
-  if (!aFrame.script) {
+  if (!aFrame || !aFrame.script) {
     return { url: null, line: null, column: null };
   }
   return {

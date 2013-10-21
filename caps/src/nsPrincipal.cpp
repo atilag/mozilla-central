@@ -424,11 +424,11 @@ nsPrincipal::SetDomain(nsIURI* aDomain)
 }
 
 NS_IMETHODIMP
-nsPrincipal::GetExtendedOrigin(nsACString& aExtendedOrigin)
+nsPrincipal::GetJarPrefix(nsACString& aJarPrefix)
 {
   MOZ_ASSERT(mAppId != nsIScriptSecurityManager::UNKNOWN_APP_ID);
 
-  mozilla::GetExtendedOrigin(mCodebase, mAppId, mInMozBrowser, aExtendedOrigin);
+  mozilla::GetJarPrefix(mAppId, mInMozBrowser, aJarPrefix);
   return NS_OK;
 }
 
@@ -572,9 +572,8 @@ nsPrincipal::GetAppStatus()
   nsCOMPtr<nsIAppsService> appsService = do_GetService(APPS_SERVICE_CONTRACTID);
   NS_ENSURE_TRUE(appsService, nsIPrincipal::APP_STATUS_NOT_INSTALLED);
 
-  nsCOMPtr<mozIDOMApplication> domApp;
-  appsService->GetAppByLocalId(mAppId, getter_AddRefs(domApp));
-  nsCOMPtr<mozIApplication> app = do_QueryInterface(domApp);
+  nsCOMPtr<mozIApplication> app;
+  appsService->GetAppByLocalId(mAppId, getter_AddRefs(app));
   NS_ENSURE_TRUE(app, nsIPrincipal::APP_STATUS_NOT_INSTALLED);
 
   uint16_t status = nsIPrincipal::APP_STATUS_INSTALLED;
@@ -773,9 +772,10 @@ nsExpandedPrincipal::GetWhiteList(nsTArray<nsCOMPtr<nsIPrincipal> >** aWhiteList
 }
 
 NS_IMETHODIMP
-nsExpandedPrincipal::GetExtendedOrigin(nsACString& aExtendedOrigin)
+nsExpandedPrincipal::GetJarPrefix(nsACString& aJarPrefix)
 {
-  return GetOrigin(getter_Copies(aExtendedOrigin));
+  aJarPrefix.Truncate();
+  return NS_OK;
 }
 
 NS_IMETHODIMP

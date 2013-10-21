@@ -5,12 +5,11 @@
 #include "nsIDOMEventTarget.idl"
 #include "SimToolKit.idl"
 
-interface nsIDOMContact;
 interface nsIDOMDOMRequest;
 interface nsIDOMEventListener;
 interface nsIDOMMozIccInfo;
 
-[scriptable, builtinclass, uuid(904b92cb-dad3-416f-88cf-0291012cf448)]
+[scriptable, builtinclass, uuid(6b5875dc-de44-4681-84a1-9ea12d60fbe2)]
 interface nsIDOMMozIccManager : nsIDOMEventTarget
 {
   /**
@@ -296,10 +295,11 @@ interface nsIDOMMozIccManager : nsIDOMEventTarget
   /**
    * Indicates the state of the device's ICC card.
    *
-   * Possible values: null, 'unknown', 'absent', 'pinRequired', 'pukRequired',
-   * 'personalizationInProgress', 'networkLocked', 'corporateLocked',
-   * 'serviceProviderLocked', 'networkPukRequired', 'corporatePukRequired',
-   * 'serviceProviderPukRequired', 'personalizationReady', 'ready'.
+   * Possible values: null, 'illegal', 'unknown', 'absent', 'pinRequired',
+   * 'pukRequired', 'personalizationInProgress', 'networkLocked',
+   * 'corporateLocked', 'serviceProviderLocked', 'networkPukRequired',
+   * 'corporatePukRequired', 'serviceProviderPukRequired',
+   * 'personalizationReady', 'ready'.
    */
   readonly attribute DOMString cardState;
 
@@ -458,16 +458,6 @@ interface nsIDOMMozIccManager : nsIDOMEventTarget
   nsIDOMDOMRequest setCardLock(in jsval info);
 
   /**
-   * The 'icccardlockerror' event is notified whenever 'unlockCardLock' or
-   * 'setCardLock' fails.
-   *
-   * The result will be an object containing information
-   * about the specified lock's status,
-   * e.g. {lockType: "pin", retryCount: 2}.
-   */
-  [implicit_jscontext] attribute jsval onicccardlockerror;
-
-  /**
    * Retrieve the number of remaining tries for unlocking the card.
    *
    * @param lockType
@@ -506,7 +496,7 @@ interface nsIDOMMozIccManager : nsIDOMEventTarget
    *        PIN2 is only required for 'fdn'.
    */
   nsIDOMDOMRequest updateContact(in DOMString contactType,
-                                 in nsIDOMContact contact,
+                                 in jsval contact,
                                  [optional] in DOMString pin2);
 
   // End of UICC Phonebook Interfaces.

@@ -18,8 +18,6 @@
 
 #include "jsgcinlines.h"
 
-#include "vm/ObjectImpl-inl.h"
-
 using namespace js;
 using namespace js::gc;
 
@@ -53,7 +51,7 @@ JS::Zone::Zone(JSRuntime *rt)
 Zone::~Zone()
 {
     if (this == runtimeFromMainThread()->systemZone)
-        runtimeFromMainThread()->systemZone = NULL;
+        runtimeFromMainThread()->systemZone = nullptr;
 }
 
 bool
@@ -185,7 +183,7 @@ Zone::sweepBreakpoints(FreeOp *fop)
 }
 
 void
-Zone::discardJitCode(FreeOp *fop, bool discardConstraints)
+Zone::discardJitCode(FreeOp *fop)
 {
 #ifdef JS_ION
     if (isPreservingCode()) {
@@ -229,7 +227,7 @@ Zone::discardJitCode(FreeOp *fop, bool discardConstraints)
             if (comp->ionCompartment())
                 comp->ionCompartment()->optimizedStubSpace()->free();
 
-            comp->types.sweepCompilerOutputs(fop, discardConstraints);
+            comp->types.clearCompilerOutputs(fop);
         }
     }
 #endif
@@ -239,6 +237,12 @@ JS::Zone *
 js::ZoneOfObject(const JSObject &obj)
 {
     return obj.zone();
+}
+
+JS::Zone *
+js::ZoneOfObjectFromAnyThread(const JSObject &obj)
+{
+    return obj.zoneFromAnyThread();
 }
 
 

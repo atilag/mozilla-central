@@ -43,7 +43,7 @@ typedef void *EGLNativeWindowType;
 // This should really go in GLLibraryEGL.cpp but we currently reference
 // APITRACE_LIB in GLContextProviderEGL.cpp. Further refactoring
 // will come in subsequent patches on Bug 732865
-#define APITRACE_LIB "/data/local/egltrace.so"
+#define APITRACE_LIB "/data/local/tmp/egltrace.so"
 
 #ifdef MOZ_WIDGET_ANDROID
 
@@ -529,6 +529,9 @@ private:
 
     bool mIsANGLE;
 };
+
+extern GLLibraryEGL sEGLLibrary;
+#define EGL_DISPLAY()        sEGLLibrary.Display()
 
 } /* namespace gl */
 } /* namespace mozilla */

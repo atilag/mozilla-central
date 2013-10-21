@@ -252,12 +252,12 @@ function checkSocialUI(win) {
       {
         type: "link",
         id: "context-marklinkMenu",
-        label: "social.marklink.label"
+        label: "social.marklinkMenu.label"
       },
       {
         type: "page",
         id: "context-markpageMenu",
-        label: "social.markpage.label"
+        label: "social.markpageMenu.label"
       }
     ];
 
@@ -296,6 +296,14 @@ function checkSocialUI(win) {
   isbool(!doc.getElementById("socialActiveBroadcaster").hidden, active, "socialActiveBroadcaster hidden?");
   // and report on overall success of failure of the various checks here.
   is(numGoodTests, numTests, "The Social UI tests succeeded.")
+}
+
+function waitForNotification(topic, cb) {
+  function observer(subject, topic, data) {
+    Services.obs.removeObserver(observer, topic);
+    cb();
+  }
+  Services.obs.addObserver(observer, topic, false);
 }
 
 // blocklist testing

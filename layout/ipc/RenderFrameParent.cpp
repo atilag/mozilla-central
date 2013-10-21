@@ -109,19 +109,19 @@ AssertInTopLevelChromeDoc(ContainerLayer* aContainer,
     "Expected frame to be in top-level chrome document");
 }
 
-// Return view for given ID in aArray, NULL if not found.
+// Return view for given ID in aArray, nullptr if not found.
 static nsContentView*
 FindViewForId(const ViewMap& aMap, ViewID aId)
 {
   ViewMap::const_iterator iter = aMap.find(aId);
-  return iter != aMap.end() ? iter->second : NULL;
+  return iter != aMap.end() ? iter->second : nullptr;
 }
 
 static const FrameMetrics*
 GetFrameMetrics(Layer* aLayer)
 {
   ContainerLayer* container = aLayer->AsContainerLayer();
-  return container ? &container->GetFrameMetrics() : NULL;
+  return container ? &container->GetFrameMetrics() : nullptr;
 }
 
 /**
@@ -487,6 +487,8 @@ public:
   RemoteContentController(RenderFrameParent* aRenderFrame)
     : mUILoop(MessageLoop::current())
     , mRenderFrame(aRenderFrame)
+    , mHaveZoomConstraints(false)
+    , mAllowZoom(true)
   { }
 
   virtual void RequestContentRepaint(const FrameMetrics& aFrameMetrics) MOZ_OVERRIDE
@@ -576,6 +578,28 @@ public:
     MessageLoop::current()->PostDelayedTask(FROM_HERE, aTask, aDelayMs);
   }
 
+  void SaveZoomConstraints(bool aAllowZoom,
+                           const CSSToScreenScale& aMinZoom,
+                           const CSSToScreenScale& aMaxZoom)
+  {
+    mHaveZoomConstraints = true;
+    mAllowZoom = aAllowZoom;
+    mMinZoom = aMinZoom;
+    mMaxZoom = aMaxZoom;
+  }
+
+  virtual bool GetZoomConstraints(bool* aOutAllowZoom,
+                                  CSSToScreenScale* aOutMinZoom,
+                                  CSSToScreenScale* aOutMaxZoom)
+  {
+    if (mHaveZoomConstraints) {
+      *aOutAllowZoom = mAllowZoom;
+      *aOutMinZoom = mMinZoom;
+      *aOutMaxZoom = mMaxZoom;
+    }
+    return mHaveZoomConstraints;
+  }
+
 private:
   void DoRequestContentRepaint(const FrameMetrics& aFrameMetrics)
   {
@@ -587,6 +611,11 @@ private:
 
   MessageLoop* mUILoop;
   RenderFrameParent* mRenderFrame;
+
+  bool mHaveZoomConstraints;
+  bool mAllowZoom;
+  CSSToScreenScale mMinZoom;
+  CSSToScreenScale mMaxZoom;
 };
 
 RenderFrameParent::RenderFrameParent(nsFrameLoader* aFrameLoader,
@@ -708,7 +737,7 @@ RenderFrameParent::BuildLayer(nsDisplayListBuilder* aBuilder,
     // widget's layer manager changed out from under us.  We need to
     // FIXME handle the former case somehow, probably with an API to
     // draw a manager's subtree.  The latter is bad bad bad, but the
-    // the NS_ABORT_IF_FALSE() above will flag it.  Returning NULL
+    // the NS_ABORT_IF_FALSE() above will flag it.  Returning nullptr
     // here will just cause the shadow subtree not to be rendered.
     NS_WARNING("Remote iframe not rendered");
     return nullptr;
@@ -797,8 +826,8 @@ RenderFrameParent::OwnerContentChanged(nsIContent* aContent)
 }
 
 void
-RenderFrameParent::NotifyInputEvent(const nsInputEvent& aEvent,
-                                    nsInputEvent* aOutEvent)
+RenderFrameParent::NotifyInputEvent(const WidgetInputEvent& aEvent,
+                                    WidgetInputEvent* aOutEvent)
 {
   if (GetApzcTreeManager()) {
     GetApzcTreeManager()->ReceiveInputEvent(aEvent, aOutEvent);
@@ -896,7 +925,7 @@ RenderFrameParent::BuildViewMap()
   if (GetRootLayer() && mFrameLoader->GetPrimaryFrameOfOwningContent()) {
     // Some of the content views in our hash map may no longer be active. To
     // tag them as inactive and to remove any chance of them using a dangling
-    // pointer, we set mContentView to NULL.
+    // pointer, we set mContentView to nullptr.
     //
     // BuildViewMap will restore mFrameLoader if the content view is still
     // in our hash table.
@@ -904,7 +933,7 @@ RenderFrameParent::BuildViewMap()
     for (ViewMap::const_iterator iter = mContentViews.begin();
          iter != mContentViews.end();
          ++iter) {
-      iter->second->mFrameLoader = NULL;
+      iter->second->mFrameLoader = nullptr;
     }
 
     mozilla::layout::BuildViewMap(mContentViews, newContentViews, mFrameLoader, GetRootLayer());
@@ -1012,6 +1041,9 @@ RenderFrameParent::UpdateZoomConstraints(bool aAllowZoom,
                                          const CSSToScreenScale& aMinZoom,
                                          const CSSToScreenScale& aMaxZoom)
 {
+  if (mContentController) {
+    mContentController->SaveZoomConstraints(aAllowZoom, aMinZoom, aMaxZoom);
+  }
   if (GetApzcTreeManager()) {
     GetApzcTreeManager()->UpdateZoomConstraints(ScrollableLayerGuid(mLayersId),
                                                 aAllowZoom, aMinZoom, aMaxZoom);

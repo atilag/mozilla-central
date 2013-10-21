@@ -24,9 +24,9 @@
 #include "TelephonyCall.h"
 #include "TelephonyCallGroup.h"
 
-USING_TELEPHONY_NAMESPACE
 using namespace mozilla::dom;
 using mozilla::ErrorResult;
+using mozilla::dom::telephony::kOutgoingPlaceholderCallIndex;
 
 namespace {
 
@@ -375,7 +375,7 @@ Telephony::SetSpeakerEnabled(bool aEnabled, ErrorResult& aRv)
 }
 
 void
-Telephony::GetActive(Nullable<TelephonyCallOrTelephonyCallGroupReturnValue>& aValue)
+Telephony::GetActive(Nullable<OwningTelephonyCallOrTelephonyCallGroup>& aValue)
 {
   if (mActiveCall) {
     aValue.SetValue().SetAsTelephonyCall() = mActiveCall;
@@ -718,26 +718,4 @@ Telephony::EnqueueEnumerationAck()
   if (NS_FAILED(NS_DispatchToCurrentThread(task))) {
     NS_WARNING("Failed to dispatch to current thread!");
   }
-}
-
-/* static */
-bool
-Telephony::CheckPermission(nsPIDOMWindow* aWindow)
-{
-  MOZ_ASSERT(aWindow && aWindow->IsInnerWindow());
-
-  nsCOMPtr<nsIPermissionManager> permMgr =
-    do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
-  NS_ENSURE_TRUE(permMgr, false);
-
-  uint32_t permission;
-  nsresult rv =
-    permMgr->TestPermissionFromWindow(aWindow, "telephony", &permission);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  if (permission != nsIPermissionManager::ALLOW_ACTION) {
-    return false;
-  }
-
-  return true;
 }
