@@ -592,6 +592,7 @@ class PerThreadData : public PerThreadDataFriendFields,
 
     bool associatedWith(const JSRuntime *rt) { return runtime_ == rt; }
     inline JSRuntime *runtimeFromMainThread();
+    inline JSRuntime *runtimeIfOnOwnerThread();
 };
 
 template<class Client>
@@ -675,7 +676,7 @@ class MarkingValidator;
 typedef Vector<JS::Zone *, 4, SystemAllocPolicy> ZoneVector;
 
 class AutoLockForExclusiveAccess;
-class AutoPauseWorkersForGC;
+class AutoPauseWorkersForTracing;
 class ThreadDataIter;
 
 void RecomputeStackLimit(JSRuntime *rt, StackKind kind);
@@ -789,7 +790,7 @@ struct JSRuntime : public JS::shadow::Runtime,
     size_t numExclusiveThreads;
 
     friend class js::AutoLockForExclusiveAccess;
-    friend class js::AutoPauseWorkersForGC;
+    friend class js::AutoPauseWorkersForTracing;
     friend class js::ThreadDataIter;
 
   public:
@@ -1793,6 +1794,12 @@ PerThreadData::runtimeFromMainThread()
 {
     JS_ASSERT(js::CurrentThreadCanAccessRuntime(runtime_));
     return runtime_;
+}
+
+inline JSRuntime *
+PerThreadData::runtimeIfOnOwnerThread()
+{
+    return js::CurrentThreadCanAccessRuntime(runtime_) ? runtime_ : nullptr;
 }
 
 /************************************************************************/

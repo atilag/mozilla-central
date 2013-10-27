@@ -896,7 +896,12 @@ AccessibleWrap::accNavigate(
     return CO_E_OBJNOTCONNECTED;
 
   Accessible* navAccessible = nullptr;
-  int32_t xpRelation = -1;
+  Maybe<RelationType> xpRelation;
+
+#define RELATIONTYPE(geckoType, stringType, atkType, msaaType, ia2Type) \
+  case msaaType: \
+    xpRelation.construct(RelationType::geckoType); \
+    break;
 
   switch(navDir) {
     case NAVDIR_FIRSTCHILD:
@@ -920,66 +925,18 @@ AccessibleWrap::accNavigate(
       return E_NOTIMPL;
 
     // MSAA relationship extensions to accNavigate
-    case NAVRELATION_CONTROLLED_BY:
-      xpRelation = static_cast<int32_t>(RelationType::CONTROLLED_BY);
-      break;
-    case NAVRELATION_CONTROLLER_FOR:
-      xpRelation = static_cast<int32_t>(RelationType::CONTROLLER_FOR);
-      break;
-    case NAVRELATION_LABEL_FOR:
-      xpRelation = static_cast<int32_t>(RelationType::LABEL_FOR);
-      break;
-    case NAVRELATION_LABELLED_BY:
-      xpRelation = static_cast<int32_t>(RelationType::LABELLED_BY);
-      break;
-    case NAVRELATION_MEMBER_OF:
-      xpRelation = static_cast<int32_t>(RelationType::MEMBER_OF);
-      break;
-    case NAVRELATION_NODE_CHILD_OF:
-      xpRelation = static_cast<int32_t>(RelationType::NODE_CHILD_OF);
-      break;
-    case NAVRELATION_FLOWS_TO:
-      xpRelation = static_cast<int32_t>(RelationType::FLOWS_TO);
-      break;
-    case NAVRELATION_FLOWS_FROM:
-      xpRelation = static_cast<int32_t>(RelationType::FLOWS_FROM);
-      break;
-    case NAVRELATION_SUBWINDOW_OF:
-      xpRelation = static_cast<int32_t>(RelationType::SUBWINDOW_OF);
-      break;
-    case NAVRELATION_EMBEDS:
-      xpRelation = static_cast<int32_t>(RelationType::EMBEDS);
-      break;
-    case NAVRELATION_EMBEDDED_BY:
-      xpRelation = static_cast<int32_t>(RelationType::EMBEDDED_BY);
-      break;
-    case NAVRELATION_POPUP_FOR:
-      xpRelation = static_cast<int32_t>(RelationType::POPUP_FOR);
-      break;
-    case NAVRELATION_PARENT_WINDOW_OF:
-      xpRelation = static_cast<int32_t>(RelationType::PARENT_WINDOW_OF);
-      break;
-    case NAVRELATION_DEFAULT_BUTTON:
-      xpRelation = static_cast<int32_t>(RelationType::DEFAULT_BUTTON);
-      break;
-    case NAVRELATION_DESCRIBED_BY:
-      xpRelation = static_cast<int32_t>(RelationType::DESCRIBED_BY);
-      break;
-    case NAVRELATION_DESCRIPTION_FOR:
-      xpRelation = static_cast<int32_t>(RelationType::DESCRIPTION_FOR);
-      break;
-    case NAVRELATION_NODE_PARENT_OF:
-      xpRelation = static_cast<int32_t>(RelationType::NODE_PARENT_OF);
-      break;
+#include "RelationTypeMap.h"
 
     default:
       return E_INVALIDARG;
   }
 
+#undef RELATIONTYPE
+
   pvarEndUpAt->vt = VT_EMPTY;
 
-  if (xpRelation >= 0) {
-    Relation rel = RelationByType(static_cast<RelationType>(xpRelation));
+  if (!xpRelation.empty()) {
+    Relation rel = RelationByType(xpRelation.ref());
     navAccessible = rel.Next();
   }
 
@@ -1175,7 +1132,7 @@ AccessibleWrap::HandleAccEvent(AccEvent* aEvent)
 
   if (eventType == nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED ||
       eventType == nsIAccessibleEvent::EVENT_FOCUS) {
-    UpdateSystemCaret();
+    UpdateSystemCaretFor(accessible);
   }
 
   int32_t childID = GetChildIDFor(accessible); // get the id for the accessible
@@ -1329,20 +1286,19 @@ AccessibleWrap::GetXPAccessibleFor(const VARIANT& aVarChild)
 }
 
 void
-AccessibleWrap::UpdateSystemCaret()
+AccessibleWrap::UpdateSystemCaretFor(Accessible* aAccessible)
 {
   // Move the system caret so that Windows Tablet Edition and tradional ATs with 
   // off-screen model can follow the caret
   ::DestroyCaret();
 
-  a11y::RootAccessible* rootAccessible = RootAccessible();
-  if (!rootAccessible) {
+  HyperTextAccessible* text = aAccessible->AsHyperText();
+  if (!text)
     return;
-  }
 
   nsIWidget* widget = nullptr;
-  nsIntRect caretRect = SelectionMgr()->GetCaretRect(&widget);
-  HWND caretWnd; 
+  nsIntRect caretRect = text->GetCaretRect(&widget);
+  HWND caretWnd;
   if (caretRect.IsEmpty() || !(caretWnd = (HWND)widget->GetNativeData(NS_NATIVE_WINDOW))) {
     return;
   }

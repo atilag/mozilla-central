@@ -1017,6 +1017,22 @@ JS_SetOptions(JSContext *cx, uint32_t options)
 }
 
 JS_PUBLIC_API(uint32_t)
+JS_DisableOptions(JSContext *cx, uint32_t options)
+{
+    unsigned oldopts = GetOptionsCommon(cx);
+    unsigned newopts = oldopts & ~options;
+    return SetOptionsCommon(cx, newopts);
+}
+
+JS_PUBLIC_API(uint32_t)
+JS_EnableOptions(JSContext *cx, uint32_t options)
+{
+    unsigned oldopts = GetOptionsCommon(cx);
+    unsigned newopts = oldopts | options;
+    return SetOptionsCommon(cx, newopts);
+}
+
+JS_PUBLIC_API(uint32_t)
 JS_ToggleOptions(JSContext *cx, uint32_t options)
 {
     unsigned oldopts = GetOptionsCommon(cx);
@@ -1139,16 +1155,12 @@ JS_WrapObject(JSContext *cx, MutableHandleObject objp)
 }
 
 JS_PUBLIC_API(bool)
-JS_WrapValue(JSContext *cx, jsval *vp)
+JS_WrapValue(JSContext *cx, MutableHandleValue vp)
 {
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
-    if (vp)
-        JS::ExposeValueToActiveJS(*vp);
-    RootedValue value(cx, *vp);
-    bool ok = cx->compartment()->wrap(cx, &value);
-    *vp = value.get();
-    return ok;
+    JS::ExposeValueToActiveJS(vp);
+    return cx->compartment()->wrap(cx, vp);
 }
 
 JS_PUBLIC_API(bool)
@@ -4466,7 +4478,7 @@ JS::Compile(JSContext *cx, HandleObject obj, CompileOptions options, const char 
     AutoFile file;
     if (!file.open(cx, filename))
         return nullptr;
-    options = options.setFileAndLine(filename, 1);
+    options.setFileAndLine(filename, 1);
     JSScript *script = Compile(cx, obj, options, file.fp());
     return script;
 }
@@ -4531,6 +4543,11 @@ JS::FinishOffThreadScript(JSContext *maybecx, JSRuntime *rt, void *token)
 {
 #ifdef JS_WORKER_THREADS
     JS_ASSERT(CurrentThreadCanAccessRuntime(rt));
+
+    Maybe<AutoLastFrameCheck> lfc;
+    if (maybecx)
+        lfc.construct(maybecx);
+
     return rt->workerThreadState->finishParseTask(maybecx, rt, token);
 #else
     MOZ_ASSUME_UNREACHABLE("Off thread compilation is not available.");
@@ -6078,7 +6095,24 @@ JS_SetGlobalJitCompilerOption(JSContext *cx, JSJitCompilerOption opt, uint32_t v
         if (value == 0)
             jit::js_IonOptions.setEagerCompilation();
         break;
-
+      case JSJITCOMPILER_ION_ENABLE:
+        if (value == 1) {
+            JS_EnableOptions(cx, JSOPTION_ION);
+            IonSpew(js::jit::IonSpew_Scripts, "Enable ion");
+        } else if (value == 0) {
+            JS_DisableOptions(cx, JSOPTION_ION);
+            IonSpew(js::jit::IonSpew_Scripts, "Disable ion");
+        }
+        break;
+      case JSJITCOMPILER_BASELINE_ENABLE:
+        if (value == 1) {
+            JS_EnableOptions(cx, JSOPTION_BASELINE);
+            IonSpew(js::jit::IonSpew_BaselineScripts, "Enable baseline");
+        } else if (value == 0) {
+            JS_DisableOptions(cx, JSOPTION_BASELINE);
+            IonSpew(js::jit::IonSpew_BaselineScripts, "Disable baseline");
+        }
+        break;
       default:
         break;
     }

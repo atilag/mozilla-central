@@ -365,12 +365,6 @@ pref("browser.download.manager.quitBehavior", 0);
 pref("browser.download.manager.scanWhenDone", true);
 pref("browser.download.manager.resumeOnWakeDelay", 10000);
 
-// Enables the asynchronous Downloads API in the Downloads Panel.
-pref("browser.download.useJSTransfer", true);
-
-// This allows disabling the Downloads Panel in favor of the old interface.
-pref("browser.download.useToolkitUI", false);
-
 // This allows disabling the animated notifications shown by
 // the Downloads Indicator when a download starts or completes.
 pref("browser.download.animateNotifications", true);
@@ -674,8 +668,6 @@ pref("plugins.update.url", "https://www.mozilla.org/%LOCALE%/plugincheck/");
 pref("plugins.update.notifyUser", false);
 
 pref("plugins.click_to_play", true);
-
-pref("plugins.clickToActivateInfo.url", "https://support.mozilla.org/1/firefox/%VERSION%/%OS%/%LOCALE%/clicktoplay");
 
 // let all plugins except Flash default to click-to-play
 pref("plugin.default.state", 1);
@@ -1174,6 +1166,9 @@ pref("devtools.scratchpad.recentFilesMax", 10);
 pref("devtools.styleeditor.enabled", true);
 pref("devtools.styleeditor.transitions", true);
 
+// Enable the Shader Editor.
+pref("devtools.shadereditor.enabled", false);
+
 // Enable tools for Chrome development.
 pref("devtools.chrome.enabled", false);
 
@@ -1192,6 +1187,7 @@ pref("devtools.webconsole.filter.networkinfo", true);
 pref("devtools.webconsole.filter.netwarn", true);
 pref("devtools.webconsole.filter.csserror", true);
 pref("devtools.webconsole.filter.cssparser", true);
+pref("devtools.webconsole.filter.csslog", false);
 pref("devtools.webconsole.filter.exception", true);
 pref("devtools.webconsole.filter.jswarn", true);
 pref("devtools.webconsole.filter.jslog", true);
@@ -1208,6 +1204,7 @@ pref("devtools.browserconsole.filter.networkinfo", true);
 pref("devtools.browserconsole.filter.netwarn", true);
 pref("devtools.browserconsole.filter.csserror", true);
 pref("devtools.browserconsole.filter.cssparser", true);
+pref("devtools.browserconsole.filter.csslog", false);
 pref("devtools.browserconsole.filter.exception", true);
 pref("devtools.browserconsole.filter.jswarn", true);
 pref("devtools.browserconsole.filter.jslog", true);
@@ -1303,8 +1300,10 @@ pref("pdfjs.firstRun", true);
 pref("pdfjs.previousHandler.preferredAction", 0);
 pref("pdfjs.previousHandler.alwaysAskBeforeHandling", false);
 
+#ifdef NIGHTLY_BUILD
 // Shumway component (SWF player) is disabled by default. Also see bug 904346.
 pref("shumway.disabled", true);
+#endif
 
 // The maximum amount of decoded image data we'll willingly keep around (we
 // might keep around more than this, but we'll try to get down to this value).

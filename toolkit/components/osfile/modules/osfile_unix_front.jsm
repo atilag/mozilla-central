@@ -94,7 +94,7 @@
       * the end of the file has been reached.
       * @throws {OS.File.Error} In case of I/O error.
       */
-     File.prototype._read = function _read(buffer, nbytes, options) {
+     File.prototype._read = function _read(buffer, nbytes, options = {}) {
       // Populate the page cache with data from a file so the subsequent reads
       // from that file will not block on disk I/O.
        if (typeof(UnixFile.posix_fadvise) === 'function' &&
@@ -120,7 +120,7 @@
       * @return {number} The number of bytes effectively written.
       * @throws {OS.File.Error} In case of I/O error.
       */
-     File.prototype._write = function _write(buffer, nbytes, options) {
+     File.prototype._write = function _write(buffer, nbytes, options = {}) {
        return throw_on_negative("write",
          UnixFile.write(this.fd, buffer, nbytes)
        );
@@ -203,8 +203,11 @@
       *  on the other fields of |mode|.
       * - {bool} write If |true|, the file will be opened for
       *  writing. The file may also be opened for reading, depending
-      *  on the other fields of |mode|. If neither |truncate| nor
-      *  |create| is specified, the file is opened for appending.
+      *  on the other fields of |mode|.
+      * - {bool} append If |true|, the file will be opened for appending,
+      *  meaning the equivalent of |.setPosition(0, POS_END)| is executed
+      *  before each write. The default is |true|, i.e. opening a file for
+      *  appending. Specify |append: false| to open the file in regular mode.
       *
       * If neither |truncate|, |create| or |write| is specified, the file
       * is opened for reading.
@@ -251,12 +254,11 @@
            flags |= Const.O_CREAT | Const.O_EXCL;
          } else if (mode.read && !mode.write) {
            // flags are sufficient
-         } else /*append*/ {
-           if (mode.existing) {
-             flags |= Const.O_APPEND;
-           } else {
-             flags |= Const.O_APPEND | Const.O_CREAT;
-           }
+         } else if (!mode.existing) {
+           flags |= Const.O_CREAT;
+         }
+         if (mode.append) {
+           flags |= Const.O_APPEND;
          }
        }
        return error_or_file(UnixFile.open(path, flags, omode));
@@ -431,6 +433,9 @@
         * @option {number} bufSize A hint regarding the size of the
         * buffer to use for copying. The implementation may decide to
         * ignore this hint.
+        * @option {bool} unixUserland Will force the copy operation to be
+        * caried out in user land, instead of using optimized syscalls such
+        * as splice(2).
         *
         * @throws {OS.File.Error} In case of error.
         */
@@ -545,12 +550,18 @@
          let result;
          try {
            source = File.open(sourcePath);
+           // Need to open the output file with |append:false|, or else |splice|
+           // won't work.
            if (options.noOverwrite) {
-             dest = File.open(destPath, {create:true});
+             dest = File.open(destPath, {create:true, append:false});
            } else {
-             dest = File.open(destPath, {trunc:true});
+             dest = File.open(destPath, {trunc:true, append:false});
            }
-           result = pump(source, dest, options);
+           if (options.unixUserland) {
+             result = pump_userland(source, dest, options);
+           } else {
+             result = pump(source, dest, options);
+           }
          } catch (x) {
            if (dest) {
              dest.close();
