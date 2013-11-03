@@ -521,6 +521,14 @@ Factory::SetGlobalSkiaCacheLimits(int aCount, int aSizeInBytes)
 }
 #endif // USE_SKIA_GPU
 
+void
+Factory::PurgeTextureCaches()
+{
+#ifdef USE_SKIA_GPU
+  DrawTargetSkia::PurgeTextureCaches();
+#endif
+}
+
 #ifdef USE_SKIA_FREETYPE
 TemporaryRef<GlyphRenderingOptions>
 Factory::CreateCairoGlyphRenderingOptions(FontHinting aHinting, bool aAutoHinting)
@@ -550,6 +558,18 @@ Factory::CreateDrawTargetForCairoSurface(cairo_surface_t* aSurface, const IntSiz
     RefPtr<DrawTarget> recordDT = new DrawTargetRecording(mRecorder, retVal);
     return recordDT;
   }
+#endif
+  return retVal;
+}
+
+TemporaryRef<SourceSurface>
+Factory::CreateSourceSurfaceForCairoSurface(cairo_surface_t* aSurface,
+                                            SurfaceFormat aFormat)
+{
+  RefPtr<SourceSurface> retVal;
+
+#ifdef USE_CAIRO
+  retVal = DrawTargetCairo::CreateSourceSurfaceForCairoSurface(aSurface, aFormat);
 #endif
   return retVal;
 }

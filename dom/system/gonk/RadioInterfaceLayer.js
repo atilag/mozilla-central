@@ -94,13 +94,13 @@ const RIL_IPC_MOBILECONNECTION_MSG_NAMES = [
   "RIL:SendMMI",
   "RIL:CancelMMI",
   "RIL:RegisterMobileConnectionMsg",
-  "RIL:SetCallForwardingOption",
-  "RIL:GetCallForwardingOption",
-  "RIL:SetCallBarringOption",
-  "RIL:GetCallBarringOption",
+  "RIL:SetCallForwardingOptions",
+  "RIL:GetCallForwardingOptions",
+  "RIL:SetCallBarringOptions",
+  "RIL:GetCallBarringOptions",
   "RIL:ChangeCallBarringPassword",
-  "RIL:SetCallWaitingOption",
-  "RIL:GetCallWaitingOption",
+  "RIL:SetCallWaitingOptions",
+  "RIL:GetCallWaitingOptions",
   "RIL:SetCallingLineIdRestriction",
   "RIL:GetCallingLineIdRestriction",
   "RIL:SetRoamingPreference",
@@ -946,25 +946,25 @@ RadioInterface.prototype = {
       case "RIL:UpdateIccContact":
         this.workerMessenger.sendWithIPCMessage(msg, "updateICCContact");
         break;
-      case "RIL:SetCallForwardingOption":
-        this.setCallForwardingOption(msg.target, msg.json.data);
+      case "RIL:SetCallForwardingOptions":
+        this.setCallForwardingOptions(msg.target, msg.json.data);
         break;
-      case "RIL:GetCallForwardingOption":
+      case "RIL:GetCallForwardingOptions":
         this.workerMessenger.sendWithIPCMessage(msg, "queryCallForwardStatus");
         break;
-      case "RIL:SetCallBarringOption":
+      case "RIL:SetCallBarringOptions":
         this.workerMessenger.sendWithIPCMessage(msg, "setCallBarring");
         break;
-      case "RIL:GetCallBarringOption":
+      case "RIL:GetCallBarringOptions":
         this.workerMessenger.sendWithIPCMessage(msg, "queryCallBarringStatus");
         break;
       case "RIL:ChangeCallBarringPassword":
         this.workerMessenger.sendWithIPCMessage(msg, "changeCallBarringPassword");
         break;
-      case "RIL:SetCallWaitingOption":
+      case "RIL:SetCallWaitingOptions":
         this.workerMessenger.sendWithIPCMessage(msg, "setCallWaiting");
         break;
-      case "RIL:GetCallWaitingOption":
+      case "RIL:GetCallWaitingOptions":
         this.workerMessenger.sendWithIPCMessage(msg, "queryCallWaiting");
         break;
       case "RIL:SetCallingLineIdRestriction":
@@ -1001,23 +1001,29 @@ RadioInterface.prototype = {
         gTelephonyProvider.notifyCallRing();
         break;
       case "callStateChange":
-        gTelephonyProvider.notifyCallStateChanged(message.call);
+        gTelephonyProvider.notifyCallStateChanged(this.clientId, message.call);
         break;
       case "callDisconnected":
-        gTelephonyProvider.notifyCallDisconnected(message.call);
+        gTelephonyProvider.notifyCallDisconnected(this.clientId, message.call);
         break;
       case "conferenceCallStateChanged":
         gTelephonyProvider.notifyConferenceCallStateChanged(message.state);
         break;
       case "cdmaCallWaiting":
-        gTelephonyProvider.notifyCdmaCallWaiting(message.number);
+        gTelephonyProvider.notifyCdmaCallWaiting(this.clientId, message.number);
         break;
       case "callError":
-        gTelephonyProvider.notifyCallError(message.callIndex, message.errorMsg);
+        gTelephonyProvider.notifyCallError(this.clientId, message.callIndex,
+                                           message.errorMsg);
         break;
       case "suppSvcNotification":
-        gTelephonyProvider.notifySupplementaryService(message.callIndex,
+        gTelephonyProvider.notifySupplementaryService(this.clientId,
+                                                      message.callIndex,
                                                       message.notification);
+        break;
+      case "conferenceError":
+        gTelephonyProvider.notifyConferenceError(message.errorName,
+                                                 message.errorMsg);
         break;
       case "emergencyCbModeChange":
         this.handleEmergencyCbModeChange(message);
@@ -1060,6 +1066,7 @@ RadioInterface.prototype = {
           this.workerMessenger.send("ackSMS", { result: RIL.PDU_FCS_OK });
         }
         return;
+      case "broadcastsms-received":
       case "cellbroadcast-received":
         message.timestamp = Date.now();
         gMessageManager.sendCellBroadcastMessage("RIL:CellBroadcastReceived",
@@ -1749,26 +1756,28 @@ RadioInterface.prototype = {
     // because the system message mechamism will rewrap the object
     // based on the content window, which needs to know the properties.
     gSystemMessenger.broadcastMessage(aName, {
-      type:           aDomMessage.type,
-      id:             aDomMessage.id,
-      threadId:       aDomMessage.threadId,
-      delivery:       aDomMessage.delivery,
-      deliveryStatus: aDomMessage.deliveryStatus,
-      sender:         aDomMessage.sender,
-      receiver:       aDomMessage.receiver,
-      body:           aDomMessage.body,
-      messageClass:   aDomMessage.messageClass,
-      timestamp:      aDomMessage.timestamp,
-      read:           aDomMessage.read
+      type:              aDomMessage.type,
+      id:                aDomMessage.id,
+      threadId:          aDomMessage.threadId,
+      delivery:          aDomMessage.delivery,
+      deliveryStatus:    aDomMessage.deliveryStatus,
+      sender:            aDomMessage.sender,
+      receiver:          aDomMessage.receiver,
+      body:              aDomMessage.body,
+      messageClass:      aDomMessage.messageClass,
+      timestamp:         aDomMessage.timestamp,
+      deliveryTimestamp: aDomMessage.deliveryTimestamp,
+      read:              aDomMessage.read
     });
   },
 
-  // The following attributes/functions are used for acquiring the CPU wake
-  // lock when the RIL handles the received SMS. Note that we need a timer to
-  // bound the lock's life cycle to avoid exhausting the battery.
+  // The following attributes/functions are used for acquiring/releasing the
+  // CPU wake lock when the RIL handles the received SMS. Note that we need
+  // a timer to bound the lock's life cycle to avoid exhausting the battery.
   _smsHandledWakeLock: null,
   _smsHandledWakeLockTimer: null,
-  _cancelSmsHandledWakeLockTimer: function _cancelSmsHandledWakeLockTimer() {
+
+  _releaseSmsHandledWakeLock: function _releaseSmsHandledWakeLock() {
     if (DEBUG) this.debug("Releasing the CPU wake lock for handling SMS.");
     if (this._smsHandledWakeLockTimer) {
       this._smsHandledWakeLockTimer.cancel();
@@ -1796,7 +1805,7 @@ RadioInterface.prototype = {
     }
     if (DEBUG) this.debug("Setting the timer for releasing the CPU wake lock.");
     this._smsHandledWakeLockTimer
-        .initWithCallback(this._cancelSmsHandledWakeLockTimer.bind(this),
+        .initWithCallback(this._releaseSmsHandledWakeLock.bind(this),
                           SMS_HANDLED_WAKELOCK_TIMEOUT,
                           Ci.nsITimer.TYPE_ONE_SHOT);
 
@@ -1844,6 +1853,7 @@ RadioInterface.prototype = {
                                                message.body,
                                                message.messageClass,
                                                message.timestamp,
+                                               0,
                                                message.read);
 
       Services.obs.notifyObservers(domMessage,
@@ -1884,7 +1894,7 @@ RadioInterface.prototype = {
         return;
       }
 
-      this.broadcastSmsSystemMessage("sms-received", domMessage);
+      this.broadcastSmsSystemMessage(kSmsReceivedObserverTopic, domMessage);
       Services.obs.notifyObservers(domMessage, kSmsReceivedObserverTopic, null);
     }.bind(this);
 
@@ -1908,6 +1918,7 @@ RadioInterface.prototype = {
                                                message.body,
                                                message.messageClass,
                                                message.timestamp,
+                                               0,
                                                message.read);
 
       notifyReceived(Cr.NS_OK, domMessage);
@@ -2174,8 +2185,8 @@ RadioInterface.prototype = {
         }
         break;
       case NS_XPCOM_SHUTDOWN_OBSERVER_ID:
-        // Cancel the timer of the CPU wake lock for handling the received SMS.
-        this._cancelSmsHandledWakeLockTimer();
+        // Release the CPU wake lock for handling the received SMS.
+        this._releaseSmsHandledWakeLock();
 
         // Shutdown all RIL network interfaces
         for each (let apnSetting in this.apnSettings.byAPN) {
@@ -2416,12 +2427,12 @@ RadioInterface.prototype = {
     }).bind(this));
   },
 
-  setCallForwardingOption: function setCallForwardingOption(target, message) {
-    if (DEBUG) this.debug("setCallForwardingOption: " + JSON.stringify(message));
+  setCallForwardingOptions: function setCallForwardingOptions(target, message) {
+    if (DEBUG) this.debug("setCallForwardingOptions: " + JSON.stringify(message));
     message.serviceClass = RIL.ICC_SERVICE_CLASS_VOICE;
     this.workerMessenger.send("setCallForward", message, (function(response) {
       this._sendCfStateChanged(response);
-      target.sendAsyncMessage("RIL:SetCallForwardingOption", {
+      target.sendAsyncMessage("RIL:SetCallForwardingOptions", {
         clientId: this.clientId,
         data: response
       });
@@ -2979,13 +2990,22 @@ RadioInterface.prototype = {
                                            context.sms.delivery,
                                            response.deliveryStatus,
                                            null,
-                                           function notifyResult(rv, domMessage) {
+                                           (function notifyResult(rv, domMessage) {
             // TODO bug 832140 handle !Components.isSuccessCode(rv)
-            let topic = (response.deliveryStatus == RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS)
+
+            let topic = (response.deliveryStatus ==
+                         RIL.GECKO_SMS_DELIVERY_STATUS_SUCCESS)
                         ? kSmsDeliverySuccessObserverTopic
                         : kSmsDeliveryErrorObserverTopic;
+
+            // Broadcasting a 'sms-delivery-success' system message to open apps.
+            if (topic == kSmsDeliverySuccessObserverTopic) {
+              this.broadcastSmsSystemMessage(topic, domMessage);
+            }
+
+            // Notifying observers the delivery status is updated.
             Services.obs.notifyObservers(domMessage, topic, null);
-          });
+          }).bind(this));
 
           // Send transaction has ended completely.
           return false;
@@ -2993,9 +3013,9 @@ RadioInterface.prototype = {
 
         // Message sent.
         if (context.silent) {
-          // There is no way to modify nsIDOMMozSmsMessage attributes as they are
-          // read only so we just create a new sms instance to send along with
-          // the notification.
+          // There is no way to modify nsIDOMMozSmsMessage attributes as they
+          // are read only so we just create a new sms instance to send along
+          // with the notification.
           let sms = context.sms;
           context.request.notifyMessageSent(
             gMobileMessageService.createSmsMessage(sms.id,
@@ -3007,6 +3027,7 @@ RadioInterface.prototype = {
                                                    sms.body,
                                                    sms.messageClass,
                                                    sms.timestamp,
+                                                   0,
                                                    sms.read));
           // We don't wait for SMS-DELIVER-REPORT for silent one.
           return false;
@@ -3020,12 +3041,12 @@ RadioInterface.prototype = {
                                          null,
                                          (function notifyResult(rv, domMessage) {
           // TODO bug 832140 handle !Components.isSuccessCode(rv)
-          this.broadcastSmsSystemMessage("sms-sent", domMessage);
 
           if (context.requestStatusReport) {
             context.sms = domMessage;
           }
 
+          this.broadcastSmsSystemMessage(kSmsSentObserverTopic, domMessage);
           context.request.notifyMessageSent(domMessage);
           Services.obs.notifyObservers(domMessage, kSmsSentObserverTopic, null);
         }).bind(this));
@@ -3057,6 +3078,7 @@ RadioInterface.prototype = {
                                                sendingMessage.body,
                                                "normal", // message class
                                                sendingMessage.timestamp,
+                                               0,
                                                false);
       notifyResult(Cr.NS_OK, domMessage);
       return;
@@ -3558,4 +3580,3 @@ RILNetworkInterface.prototype = {
 };
 
 this.NSGetFactory = XPCOMUtils.generateNSGetFactory([RadioInterfaceLayer]);
-
