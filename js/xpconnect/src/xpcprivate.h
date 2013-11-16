@@ -1172,6 +1172,7 @@ XPC_WN_JSOp_ThisObject(JSContext *cx, JS::HandleObject obj);
         nullptr, /* deleteProperty */                                         \
         nullptr, /* deleteElement */                                          \
         nullptr, /* deleteSpecial */                                          \
+        nullptr, nullptr, /* watch/unwatch */                                 \
         XPC_WN_JSOp_Enumerate,                                                \
         XPC_WN_JSOp_ThisObject,                                               \
     }
@@ -1200,6 +1201,7 @@ XPC_WN_JSOp_ThisObject(JSContext *cx, JS::HandleObject obj);
         nullptr, /* deleteProperty */                                         \
         nullptr, /* deleteElement */                                          \
         nullptr, /* deleteSpecial */                                          \
+        nullptr, nullptr, /* watch/unwatch */                                 \
         XPC_WN_JSOp_Enumerate,                                                \
         XPC_WN_JSOp_ThisObject,                                               \
     }
@@ -3620,7 +3622,7 @@ IsSandbox(JSObject *obj);
 class MOZ_STACK_CLASS OptionsBase {
 public:
     OptionsBase(JSContext *cx = xpc_GetSafeJSContext(),
-                JS::HandleObject options = JS::NullPtr())
+                JSObject *options = nullptr)
         : mCx(cx)
         , mObject(cx, options)
     { }
@@ -3632,6 +3634,7 @@ protected:
     bool ParseBoolean(const char *name, bool *prop);
     bool ParseObject(const char *name, JS::MutableHandleObject prop);
     bool ParseString(const char *name, nsCString &prop);
+    bool ParseString(const char *name, nsString &prop);
     bool ParseId(const char* name, JS::MutableHandleId id);
 
     JSContext *mCx;
@@ -3641,7 +3644,7 @@ protected:
 class MOZ_STACK_CLASS SandboxOptions : public OptionsBase {
 public:
     SandboxOptions(JSContext *cx = xpc_GetSafeJSContext(),
-                   JS::HandleObject options = JS::NullPtr())
+                   JSObject *options = nullptr)
         : OptionsBase(cx, options)
         , wantXrays(true)
         , wantComponents(true)
@@ -3669,7 +3672,7 @@ protected:
 class MOZ_STACK_CLASS CreateObjectInOptions : public OptionsBase {
 public:
     CreateObjectInOptions(JSContext *cx = xpc_GetSafeJSContext(),
-                          JS::HandleObject options = JS::NullPtr())
+                          JSObject* options = nullptr)
         : OptionsBase(cx, options)
         , defineAs(cx, JSID_VOID)
     { }
@@ -3755,11 +3758,12 @@ public:
         LocationHintAddon
     };
 
-    CompartmentPrivate()
+    CompartmentPrivate(JSCompartment *c)
         : wantXrays(false)
         , universalXPConnectEnabled(false)
         , adoptedNode(false)
         , donatedNode(false)
+        , scriptability(c)
         , scope(nullptr)
     {
         MOZ_COUNT_CTOR(xpc::CompartmentPrivate);
@@ -3778,6 +3782,9 @@ public:
     // for telemetry. See bug 928476.
     bool adoptedNode;
     bool donatedNode;
+
+    // The scriptability of this compartment.
+    Scriptability scriptability;
 
     // Our XPCWrappedNativeScope. This is non-null if and only if this is an
     // XPConnect compartment.

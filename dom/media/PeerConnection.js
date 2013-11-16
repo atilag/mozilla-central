@@ -259,7 +259,9 @@ RTCPeerConnection.prototype = {
     this.makeGetterSetterEH("oniceconnectionstatechange");
 
     this._pc = new this._win.PeerConnectionImpl();
-    this._observer = new this._win.PeerConnectionObserver(this);
+
+    this.__DOM_IMPL__._innerObject = this;
+    this._observer = new this._win.PeerConnectionObserver(this.__DOM_IMPL__);
     this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
                            .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
 
@@ -488,13 +490,17 @@ RTCPeerConnection.prototype = {
       constraints = {};
     }
     this._mustValidateConstraints(constraints, "createOffer passed invalid constraints");
-    this._onCreateOfferSuccess = onSuccess;
-    this._onCreateOfferFailure = onError;
 
-    this._queueOrRun({ func: this._createOffer, args: [constraints], wait: true });
+    this._queueOrRun({
+      func: this._createOffer,
+      args: [onSuccess, onError, constraints],
+      wait: true
+    });
   },
 
-  _createOffer: function(constraints) {
+  _createOffer: function(onSuccess, onError, constraints) {
+    this._onCreateOfferSuccess = onSuccess;
+    this._onCreateOfferFailure = onError;
     this._getPC().createOffer(constraints);
   },
 
@@ -540,12 +546,6 @@ RTCPeerConnection.prototype = {
   },
 
   setLocalDescription: function(desc, onSuccess, onError) {
-    // TODO -- if we have two setLocalDescriptions in the
-    // queue,this code overwrites the callbacks for the first
-    // one with the callbacks for the second one. See Bug 831759.
-    this._onSetLocalDescriptionSuccess = onSuccess;
-    this._onSetLocalDescriptionFailure = onError;
-
     let type;
     switch (desc.type) {
       case "offer":
@@ -563,23 +563,19 @@ RTCPeerConnection.prototype = {
 
     this._queueOrRun({
       func: this._setLocalDescription,
-      args: [type, desc.sdp],
+      args: [type, desc.sdp, onSuccess, onError],
       wait: true,
       type: desc.type
     });
   },
 
-  _setLocalDescription: function(type, sdp) {
+  _setLocalDescription: function(type, sdp, onSuccess, onError) {
+    this._onSetLocalDescriptionSuccess = onSuccess;
+    this._onSetLocalDescriptionFailure = onError;
     this._getPC().setLocalDescription(type, sdp);
   },
 
   setRemoteDescription: function(desc, onSuccess, onError) {
-    // TODO -- if we have two setRemoteDescriptions in the
-    // queue, this code overwrites the callbacks for the first
-    // one with the callbacks for the second one. See Bug 831759.
-    this._onSetRemoteDescriptionSuccess = onSuccess;
-    this._onSetRemoteDescriptionFailure = onError;
-
     let type;
     switch (desc.type) {
       case "offer":
@@ -597,13 +593,15 @@ RTCPeerConnection.prototype = {
 
     this._queueOrRun({
       func: this._setRemoteDescription,
-      args: [type, desc.sdp],
+      args: [type, desc.sdp, onSuccess, onError],
       wait: true,
       type: desc.type
     });
   },
 
-  _setRemoteDescription: function(type, sdp) {
+  _setRemoteDescription: function(type, sdp, onSuccess, onError) {
+    this._onSetRemoteDescriptionSuccess = onSuccess;
+    this._onSetRemoteDescriptionFailure = onError;
     this._getPC().setRemoteDescription(type, sdp);
   },
 
@@ -845,7 +843,7 @@ PeerConnectionObserver.prototype = {
   init: function(win) { this._win = win; },
 
   __init: function(dompc) {
-    this._dompc = dompc;
+    this._dompc = dompc._innerObject;
   },
 
   dispatchEvent: function(event) {

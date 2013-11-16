@@ -37,9 +37,6 @@ const NS_XPCOM_SHUTDOWN_OBSERVER_ID      = "xpcom-shutdown";
 const kNetworkInterfaceStateChangedTopic = "network-interface-state-changed";
 const kMobileMessageDeletedObserverTopic = "mobile-message-deleted";
 
-const kPrefRilMmsc                       = "ril.mms.mmsc";
-const kPrefRilMmsProxy                   = "ril.mms.mmsproxy";
-const kPrefRilMmsPort                    = "ril.mms.mmsport";
 const kPrefRilRadioDisabled              = "ril.radio.disabled";
 
 // HTTP status codes:
@@ -174,7 +171,8 @@ MmsConnection.prototype = {
     }
 
     let port = this.mmsPort;
-    if (port == -1) {
+
+    if (port <= 0) {
       port = 80;
       if (DEBUG) debug("getProxyInfo: port is not valid. Set to defult (80).");
     }
@@ -190,7 +188,7 @@ MmsConnection.prototype = {
 
   // For keeping track of the radio status.
   radioDisabled: false,
-  settings: ["ril.radio.disabled"],
+  settings: [kPrefRilRadioDisabled],
   connected: false,
 
   //A queue to buffer the MMS HTTP requests when the MMS network
@@ -407,16 +405,25 @@ MmsConnection.prototype = {
           return;
         }
 
-        this.connected =
+        // We only need to capture the state change of MMS network. Using
+        // |network.state| isn't reliable due to the possibilty of shared APN.
+        let connected =
           this.radioInterface.getDataCallStateByType("mms") ==
             Ci.nsINetworkInterface.NETWORK_STATE_CONNECTED;
 
+        // Return if the MMS network state doesn't change, where the network
+        // state change can come from other non-MMS networks.
+        if (connected == this.connected) {
+          return;
+        }
+
+        this.connected = connected;
         if (!this.connected) {
           return;
         }
 
-        // Set up the MMS APN setting based on the network, which is going to
-        // be used for the HTTP requests later.
+        // Set up the MMS APN setting based on the connected MMS network,
+        // which is going to be used for the HTTP requests later.
         this.setApnSetting(network);
 
         if (DEBUG) debug("Got the MMS network connected! Resend the buffered " +
@@ -1163,6 +1170,7 @@ SendTransaction.prototype = Object.create(CancellableTransaction.prototype, {
       if (!this.istreamComposed) {
         this.loadBlobs(this.msg.parts, (function () {
           this.istream = MMS.PduHelper.compose(null, this.msg);
+          this.istreamSize = this.istream.available();
           this.istreamComposed = true;
           if (this.isCancelled) {
             this.runCallbackIfValid(_MMS_ERROR_MESSAGE_DELETED, null);
@@ -1192,6 +1200,13 @@ SendTransaction.prototype = Object.create(CancellableTransaction.prototype, {
           }
 
           this.retryCount++;
+
+          // the input stream may be read in the previous failure request so
+          // we have to re-compose it.
+          if (this.istreamSize == null ||
+              this.istreamSize != this.istream.available()) {
+            this.istream = MMS.PduHelper.compose(null, this.msg);
+          }
 
           this.timer.initWithCallback(this.send.bind(this, retryCallback),
                                       PREF_SEND_RETRY_INTERVAL,
@@ -1544,19 +1559,19 @@ MmsService.prototype = {
     // because the system message mechamism will rewrap the object
     // based on the content window, which needs to know the properties.
     gSystemMessenger.broadcastMessage(aName, {
-      type:           aDomMessage.type,
-      id:             aDomMessage.id,
-      threadId:       aDomMessage.threadId,
-      delivery:       aDomMessage.delivery,
-      deliveryInfo:   aDomMessage.deliveryInfo,
-      sender:         aDomMessage.sender,
-      receivers:      aDomMessage.receivers,
-      timestamp:      aDomMessage.timestamp,
-      read:           aDomMessage.read,
-      subject:        aDomMessage.subject,
-      smil:           aDomMessage.smil,
-      attachments:    aDomMessage.attachments,
-      expiryDate:     aDomMessage.expiryDate
+      type:         aDomMessage.type,
+      id:           aDomMessage.id,
+      threadId:     aDomMessage.threadId,
+      delivery:     aDomMessage.delivery,
+      deliveryInfo: aDomMessage.deliveryInfo,
+      sender:       aDomMessage.sender,
+      receivers:    aDomMessage.receivers,
+      timestamp:    aDomMessage.timestamp,
+      read:         aDomMessage.read,
+      subject:      aDomMessage.subject,
+      smil:         aDomMessage.smil,
+      attachments:  aDomMessage.attachments,
+      expiryDate:   aDomMessage.expiryDate
     });
   },
 
@@ -1698,11 +1713,19 @@ MmsService.prototype = {
 
     this.broadcastReceivedMessageEvent(domMessage);
 
-    // In roaming environment, we send notify response only in
+    // In the roaming environment, we send notify response only for the
     // automatic retrieval mode.
     if ((retrievalMode !== RETRIEVAL_MODE_AUTOMATIC) &&
         mmsConnection.isVoiceRoaming()) {
       return;
+    }
+
+    // Under the "automatic" retrieval mode, for the non-active SIM, we have to
+    // download the MMS as if it is downloaded by the "manual" retrieval mode.
+    if ((retrievalMode == RETRIEVAL_MODE_AUTOMATIC ||
+         retrievalMode == RETRIEVAL_MODE_AUTOMATIC_HOME) &&
+        mmsConnection.serviceId != this.mmsDefaultServiceId) {
+      retrievalMode = RETRIEVAL_MODE_MANUAL;
     }
 
     if (RETRIEVAL_MODE_MANUAL === retrievalMode ||
@@ -1722,6 +1745,7 @@ MmsService.prototype = {
       transaction.run();
       return;
     }
+
     let url = savableMessage.headers["x-mms-content-location"].uri;
 
     // For RETRIEVAL_MODE_AUTOMATIC or RETRIEVAL_MODE_AUTOMATIC_HOME but not
@@ -2184,6 +2208,15 @@ MmsService.prototype = {
       } catch (e) {
         if (DEBUG) debug("RIL service is not available for ICC ID.");
         aRequest.notifyGetMessageFailed(Ci.nsIMobileMessageCallback.NO_SIM_CARD_ERROR);
+        return;
+      }
+
+      // To support DSDS, we have to stop users retrieving MMS when the needed
+      // SIM is not active, thus avoiding the data disconnection of the current
+      // SIM. Users have to manually swith the default SIM before retrieving.
+      if (serviceId != this.mmsDefaultServiceId) {
+        if (DEBUG) debug("RIL service is not active to retrieve MMS.");
+        aRequest.notifyGetMessageFailed(Ci.nsIMobileMessageCallback.NON_ACTIVE_SIM_CARD_ERROR);
         return;
       }
 

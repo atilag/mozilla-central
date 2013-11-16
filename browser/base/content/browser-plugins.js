@@ -731,10 +731,6 @@ var gPluginHandler = {
       let principal = contentWindow.document.nodePrincipal;
       Services.perms.addFromPrincipal(principal, aPluginInfo.permissionString,
                                       permission, expireType, expireTime);
-
-      if (aNewState == "block") {
-        return;
-      }
     }
 
     // Manually activate the plugins that would have been automatically
@@ -752,19 +748,23 @@ var gPluginHandler = {
       }
       if (aPluginInfo.permissionString == pluginHost.getPermissionStringForType(plugin.actualType)) {
         pluginFound = true;
-        if (gPluginHandler.canActivatePlugin(plugin)) {
-          let overlay = this.getPluginUI(plugin, "main");
-          if (overlay) {
-            overlay.removeEventListener("click", gPluginHandler._overlayClickListener, true);
+        if (aNewState == "block") {
+          plugin.reload(true);
+        } else {
+          if (gPluginHandler.canActivatePlugin(plugin)) {
+            let overlay = this.getPluginUI(plugin, "main");
+            if (overlay) {
+              overlay.removeEventListener("click", gPluginHandler._overlayClickListener, true);
+            }
+            plugin.playPlugin();
           }
-          plugin.playPlugin();
         }
       }
     }
 
     // If there are no instances of the plugin on the page any more, what the
     // user probably needs is for us to allow and then refresh.
-    if (!pluginFound) {
+    if (aNewState != "block" && !pluginFound) {
       browser.reload();
     }
   },
@@ -903,12 +903,19 @@ var gPluginHandler = {
     let cwu = contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
                            .getInterface(Ci.nsIDOMWindowUtils);
     for (let plugin of cwu.plugins) {
-      let fallbackType = plugin.pluginFallbackType;
-      if (fallbackType != Ci.nsIObjectLoadingContent.PLUGIN_CLICK_TO_PLAY) {
-        continue;
-      }
       let info = this._getPluginInfo(plugin);
       if (!actions.has(info.permissionString)) {
+        continue;
+      }
+      let fallbackType = info.fallbackType;
+      if (fallbackType == Ci.nsIObjectLoadingContent.PLUGIN_ACTIVE) {
+        actions.delete(info.permissionString);
+        if (actions.size == 0) {
+          break;
+        }
+        continue;
+      }
+      if (fallbackType != Ci.nsIObjectLoadingContent.PLUGIN_CLICK_TO_PLAY) {
         continue;
       }
       let overlay = this.getPluginUI(plugin, "main");

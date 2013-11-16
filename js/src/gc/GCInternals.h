@@ -9,6 +9,8 @@
 
 #include "jsworkers.h"
 
+#include "gc/Zone.h"
+
 #include "vm/Runtime.h"
 
 namespace js {
@@ -26,9 +28,10 @@ BufferGrayRoots(GCMarker *gcmarker);
 class AutoCopyFreeListToArenas
 {
     JSRuntime *runtime;
+    ZoneSelector selector;
 
   public:
-    AutoCopyFreeListToArenas(JSRuntime *rt);
+    AutoCopyFreeListToArenas(JSRuntime *rt, ZoneSelector selector);
     ~AutoCopyFreeListToArenas();
 };
 
@@ -64,7 +67,7 @@ struct AutoPrepareForTracing
     AutoTraceSession session;
     AutoCopyFreeListToArenas copy;
 
-    AutoPrepareForTracing(JSRuntime *rt);
+    AutoPrepareForTracing(JSRuntime *rt, ZoneSelector selector);
 };
 
 class IncrementalSafety
