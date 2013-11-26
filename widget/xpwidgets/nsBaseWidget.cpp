@@ -851,7 +851,7 @@ nsBaseWidget::ComputeShouldAccelerate(bool aDefault)
 #endif
 
   // we should use AddBoolPrefVarCache
-  bool disableAcceleration = IsSmallPopup() || gfxPlatform::GetPrefLayersAccelerationDisabled();
+  bool disableAcceleration = gfxPlatform::GetPrefLayersAccelerationDisabled();
   mForceLayersAcceleration = gfxPlatform::GetPrefLayersAccelerationForceEnabled();
 
   const char *acceleratedEnv = PR_GetEnv("MOZ_ACCELERATED");
@@ -952,7 +952,7 @@ void nsBaseWidget::CreateCompositor(int aWidth, int aHeight)
 
   mCompositorParent = NewCompositorParent(aWidth, aHeight);
   MessageChannel *parentChannel = mCompositorParent->GetIPCChannel();
-  LayerManager* lm = new ClientLayerManager(this);
+  ClientLayerManager* lm = new ClientLayerManager(this);
   MessageLoop *childMessageLoop = CompositorParent::CompositorLoop();
   mCompositorChild = new CompositorChild(lm);
   mCompositorChild->Open(parentChannel, childMessageLoop, ipc::ChildSide);
@@ -992,15 +992,9 @@ void nsBaseWidget::CreateCompositor(int aWidth, int aHeight)
   // deallocated it when being freed.
 }
 
-bool nsBaseWidget::IsSmallPopup()
-{
-  return mWindowType == eWindowType_popup &&
-         mPopupType != ePopupTypePanel;
-}
-
 bool nsBaseWidget::ShouldUseOffMainThreadCompositing()
 {
-  return CompositorParent::CompositorLoop() && !IsSmallPopup();
+  return CompositorParent::CompositorLoop();
 }
 
 LayerManager* nsBaseWidget::GetLayerManager(PLayerTransactionChild* aShadowManager,

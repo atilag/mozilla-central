@@ -397,7 +397,11 @@ LIRGenerator::visitComputeThis(MComputeThis *ins)
     JS_ASSERT(ins->input()->type() == MIRType_Value);
 
     LComputeThis *lir = new LComputeThis();
-    if (!useBoxAtStart(lir, LComputeThis::ValueIndex, ins->input()))
+
+    // Don't use useBoxAtStart because ComputeThis has a safepoint and needs to
+    // have its inputs in different registers than its return value so that
+    // they aren't clobbered.
+    if (!useBox(lir, LComputeThis::ValueIndex, ins->input()))
         return false;
 
     return define(lir, ins) && assignSafepoint(lir, ins);
@@ -2274,7 +2278,7 @@ LIRGenerator::visitNot(MNot *ins)
     // - object: false if it never emulates undefined, else LNotO(x)
     switch (op->type()) {
       case MIRType_Boolean: {
-        MConstant *cons = MConstant::New(Int32Value(1));
+        MConstant *cons = MConstant::New(alloc(), Int32Value(1));
         ins->block()->insertBefore(ins, cons);
         return lowerForALU(new LBitOpI(JSOP_BITXOR), ins, op, cons);
       }
@@ -3209,7 +3213,7 @@ LIRGenerator::visitFunctionBoundary(MFunctionBoundary *ins)
         return false;
     // If slow assertions are enabled, then this node will result in a callVM
     // out to a C++ function for the assertions, so we will need a safepoint.
-    return !GetIonContext()->runtime->spsProfiler.slowAssertionsEnabled() ||
+    return !GetIonContext()->runtime->spsProfiler().slowAssertionsEnabled() ||
            assignSafepoint(lir, ins);
 }
 
@@ -3368,6 +3372,15 @@ LIRGenerator::visitGetDOMProperty(MGetDOMProperty *ins)
     return defineReturn(lir, ins) && assignSafepoint(lir, ins);
 }
 
+bool
+LIRGenerator::visitGetDOMMember(MGetDOMMember *ins)
+{
+    MOZ_ASSERT(ins->isDomPure(), "Members had better be pure");
+    LGetDOMMember *lir =
+        new LGetDOMMember(useRegister(ins->object()));
+    return defineBox(lir, ins);
+}
+
 static void
 SpewResumePoint(MBasicBlock *block, MInstruction *ins, MResumePoint *resumePoint)
 {
@@ -3488,8 +3501,10 @@ LIRGenerator::visitBlock(MBasicBlock *block)
     if (!definePhis())
         return false;
 
-    if (!add(new LLabel()))
-        return false;
+    if (js_IonOptions.registerAllocator == RegisterAllocator_LSRA) {
+        if (!add(new LLabel()))
+            return false;
+    }
 
     for (MInstructionIterator iter = block->begin(); *iter != block->lastIns(); iter++) {
         if (!visitInstruction(*iter))
@@ -3545,7 +3560,7 @@ LIRGenerator::generate()
         if (gen->shouldCancel("Lowering (preparation loop)"))
             return false;
 
-        current = LBlock::New(*block);
+        current = LBlock::New(alloc(), *block);
         if (!current)
             return false;
         if (!lirGraph_.addBlock(current))

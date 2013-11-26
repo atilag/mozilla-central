@@ -1887,6 +1887,21 @@ public:
   static bool IsSubDocumentTabbable(nsIContent* aContent);
 
   /**
+   * Returns if aNode ignores user focus.
+   *
+   * @param aNode node to test
+   *
+   * @return Whether the node ignores user focus.
+   */
+  static bool IsUserFocusIgnored(nsINode* aNode);
+
+  /**
+   * Returns if aContent has the 'scrollgrab' property.
+   * aContent may be null (in this case false is returned).
+   */
+  static bool HasScrollgrab(nsIContent* aContent);
+
+  /**
    * Flushes the layout tree (recursively)
    *
    * @param aWindow the window the flush should start at

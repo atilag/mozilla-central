@@ -232,21 +232,29 @@ class LiveInterval
     InlineForwardList<UsePosition> uses_;
     size_t lastProcessedRange_;
 
-  public:
-
-    LiveInterval(uint32_t vreg, uint32_t index)
-      : spillInterval_(nullptr),
+    LiveInterval(TempAllocator &alloc, uint32_t vreg, uint32_t index)
+      : ranges_(alloc),
+        spillInterval_(nullptr),
         vreg_(vreg),
         index_(index),
         lastProcessedRange_(size_t(-1))
     { }
 
-    LiveInterval(uint32_t index)
-      : spillInterval_(nullptr),
+    LiveInterval(TempAllocator &alloc, uint32_t index)
+      : ranges_(alloc),
+        spillInterval_(nullptr),
         vreg_(UINT32_MAX),
         index_(index),
         lastProcessedRange_(size_t(-1))
     { }
+
+  public:
+    static LiveInterval *New(TempAllocator &alloc, uint32_t vreg, uint32_t index) {
+        return new(alloc) LiveInterval(alloc, vreg, index);
+    }
+    static LiveInterval *New(TempAllocator &alloc, uint32_t index) {
+        return new(alloc) LiveInterval(alloc, index);
+    }
 
     bool addRange(CodePosition from, CodePosition to);
     bool addRangeAtHead(CodePosition from, CodePosition to);
@@ -348,6 +356,7 @@ class LiveInterval
     bool splitFrom(CodePosition pos, LiveInterval *after);
 
     void addUse(UsePosition *use);
+    void addUseAtEnd(UsePosition *use);
     UsePosition *nextUseAfter(CodePosition pos);
     CodePosition nextUsePosAfter(CodePosition pos);
     CodePosition firstIncompatibleUse(LAllocation alloc);
@@ -358,6 +367,10 @@ class LiveInterval
 
     UsePositionIterator usesEnd() const {
         return uses_.end();
+    }
+
+    bool usesEmpty() const {
+        return uses_.empty();
     }
 
     UsePosition *usesBack() {
@@ -387,6 +400,11 @@ class VirtualRegister
     void operator=(const VirtualRegister &) MOZ_DELETE;
     VirtualRegister(const VirtualRegister &) MOZ_DELETE;
 
+  protected:
+    VirtualRegister(TempAllocator &alloc)
+      : intervals_(alloc)
+    {}
+
   public:
     bool init(TempAllocator &alloc, LBlock *block, LInstruction *ins, LDefinition *def,
               bool isTemp)
@@ -396,7 +414,7 @@ class VirtualRegister
         ins_ = ins;
         def_ = def;
         isTemp_ = isTemp;
-        LiveInterval *initial = new(alloc) LiveInterval(def->virtualRegister(), 0);
+        LiveInterval *initial = LiveInterval::New(alloc, def->virtualRegister(), 0);
         if (!initial)
             return false;
         return intervals_.append(initial);
@@ -480,6 +498,9 @@ class VirtualRegisterMap
         if (!vregs_)
             return false;
         memset(vregs_, 0, sizeof(VREG) * numVregs);
+        TempAllocator &alloc = gen->alloc();
+        for (uint32_t i = 0; i < numVregs; i++)
+            new(&vregs_[i]) VREG(alloc);
         return true;
     }
     VREG &operator[](unsigned int index) {
@@ -630,7 +651,7 @@ class LiveRangeAllocator : public RegisterAllocator
         size_t i = 0;
         for (; i < graph.numNonCallSafepoints(); i++) {
             const LInstruction *ins = graph.getNonCallSafepoint(i);
-            if (from <= (forLSRA ? inputOf(ins) : outputOf(ins)))
+            if (from <= inputOf(ins))
                 break;
         }
         return i;
@@ -651,11 +672,11 @@ class LiveRangeAllocator : public RegisterAllocator
         size_t i = findFirstNonCallSafepoint(start);
         for (; i < graph.numNonCallSafepoints(); i++) {
             LInstruction *ins = graph.getNonCallSafepoint(i);
-            CodePosition pos = forLSRA ? inputOf(ins) : outputOf(ins);
+            CodePosition pos = inputOf(ins);
 
             // Safepoints are sorted, so we can shortcut out of this loop
             // if we go out of range.
-            if (interval->end() < pos)
+            if (interval->end() <= pos)
                 break;
 
             if (!interval->covers(pos))

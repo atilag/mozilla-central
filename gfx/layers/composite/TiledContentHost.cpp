@@ -184,6 +184,10 @@ TiledContentHost::RenderTile(const TiledTexture& aTile,
 
   RefPtr<TexturedEffect> effect =
     CreateTexturedEffect(aTile.mDeprecatedTextureHost, aFilter);
+  if (!effect) {
+    return;
+  }
+
   if (aTile.mDeprecatedTextureHost->Lock()) {
     aEffectChain.mPrimaryEffect = effect;
   } else {
@@ -306,7 +310,6 @@ TiledTexture::Validate(gfxReusableSurfaceWrapper* aReusableSurface, Compositor* 
   mDeprecatedTextureHost->Update(aReusableSurface, flags, gfx::IntSize(aSize, aSize));
 }
 
-#ifdef MOZ_LAYERS_HAVE_LOG
 void
 TiledContentHost::PrintInfo(nsACString& aTo, const char* aPrefix)
 {
@@ -314,7 +317,6 @@ TiledContentHost::PrintInfo(nsACString& aTo, const char* aPrefix)
   aTo += nsPrintfCString("TiledContentHost (0x%p)", this);
 
 }
-#endif
 
 #ifdef MOZ_DUMP_PAINTING
 void
@@ -329,16 +331,16 @@ TiledContentHost::Dump(FILE* aFile,
   TiledLayerBufferComposite::Iterator it = mVideoMemoryTiledBuffer.TilesBegin();
   TiledLayerBufferComposite::Iterator stop = mVideoMemoryTiledBuffer.TilesEnd();
   if (aDumpHtml) {
-    fprintf(aFile, "<ul>");
+    fprintf_stderr(aFile, "<ul>");
   }
   for (;it != stop; ++it) {
-    fprintf(aFile, "%s", aPrefix);
-    fprintf(aFile, aDumpHtml ? "<li> <a href=" : "Tile ");
+    fprintf_stderr(aFile, "%s", aPrefix);
+    fprintf_stderr(aFile, aDumpHtml ? "<li> <a href=" : "Tile ");
     DumpDeprecatedTextureHost(aFile, it->mDeprecatedTextureHost);
-    fprintf(aFile, aDumpHtml ? " >Tile</a></li>" : " ");
+    fprintf_stderr(aFile, aDumpHtml ? " >Tile</a></li>" : " ");
   }
     if (aDumpHtml) {
-    fprintf(aFile, "</ul>");
+    fprintf_stderr(aFile, "</ul>");
   }
 }
 #endif

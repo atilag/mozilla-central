@@ -73,6 +73,12 @@ JS_GetAnonymousString(JSRuntime *rt)
     return rt->atomState.anonymous;
 }
 
+JS_FRIEND_API(void)
+JS_SetIsWorkerRuntime(JSRuntime *rt)
+{
+    rt->setIsWorkerRuntime();
+}
+
 JS_FRIEND_API(JSObject *)
 JS_FindCompilationScope(JSContext *cx, JSObject *objArg)
 {
@@ -554,6 +560,16 @@ js::GetObjectProto(JSContext *cx, JS::Handle<JSObject*> obj, JS::MutableHandle<J
     return true;
 }
 
+JS_FRIEND_API(bool)
+js::GetOriginalEval(JSContext *cx, HandleObject scope, MutableHandleObject eval)
+{
+    assertSameCompartment(cx, scope);
+    if (!scope->global().getOrCreateObjectPrototype(cx))
+        return false;
+    eval.set(&scope->global().getOriginalEval().toObject());
+    return true;
+}
+
 JS_FRIEND_API(void)
 js::SetReservedSlotWithBarrier(JSObject *obj, size_t slot, const js::Value &value)
 {
@@ -901,7 +917,7 @@ JS::NotifyDidPaint(JSRuntime *rt)
 JS_FRIEND_API(bool)
 JS::IsIncrementalGCEnabled(JSRuntime *rt)
 {
-    return rt->gcIncrementalEnabled && rt->gcMode == JSGC_MODE_INCREMENTAL;
+    return rt->gcIncrementalEnabled && rt->gcMode() == JSGC_MODE_INCREMENTAL;
 }
 
 JS_FRIEND_API(bool)

@@ -1383,6 +1383,12 @@ nsDocShell::LoadURI(nsIURI * aURI,
                     // want to update global/session history. However,
                     // this child frame is not an error page.
                     loadType = LOAD_BYPASS_HISTORY;
+                } else if ((parentLoadType == LOAD_RELOAD_BYPASS_CACHE) ||
+                           (parentLoadType == LOAD_RELOAD_BYPASS_PROXY) ||
+                           (parentLoadType == LOAD_RELOAD_BYPASS_PROXY_AND_CACHE)) {
+                    // the new frame should inherit the parent's load type so that it also
+                    // bypasses the cache and/or proxy
+                    loadType = parentLoadType;
                 }
             } else {
                 // This is a pre-existing subframe. If the load was not originally initiated
@@ -7253,7 +7259,7 @@ nsDocShell::CreateAboutBlankContentViewer(nsIPrincipal* aPrincipal,
       // got Reset() with a channel.
       blankDoc->SetBaseURI(aBaseURI);
 
-      blankDoc->SetContainer(static_cast<nsIDocShell *>(this));
+      blankDoc->SetContainer(this);
 
       // Copy our sandbox flags to the document. These are immutable
       // after being set here.
@@ -7265,7 +7271,7 @@ nsDocShell::CreateAboutBlankContentViewer(nsIPrincipal* aPrincipal,
 
       // hook 'em up
       if (viewer) {
-        viewer->SetContainer(static_cast<nsIContentViewerContainer *>(this));
+        viewer->SetContainer(this);
         Embed(viewer, "", 0);
 
         SetCurrentURI(blankDoc->GetDocumentURI(), nullptr, true, 0);
@@ -7601,7 +7607,7 @@ nsDocShell::RestorePresentation(nsISHEntry *aSHEntry, bool *aRestoring)
     // different one.  We don't currently support restoring the presentation
     // in that case.
 
-    nsCOMPtr<nsISupports> container;
+    nsCOMPtr<nsIDocShell> container;
     viewer->GetContainer(getter_AddRefs(container));
     if (!::SameCOMIdentity(container, GetAsSupports(this))) {
 #ifdef DEBUG_PAGE_CACHE
@@ -8327,13 +8333,13 @@ nsDocShell::NewContentViewerObj(const char *aContentType,
     nsresult rv = docLoaderFactory->CreateInstance("view",
                                                    aOpenedChannel,
                                                    aLoadGroup, aContentType,
-                                                   static_cast<nsIContentViewerContainer*>(this),
+                                                   this,
                                                    nullptr,
                                                    aContentHandler,
                                                    aViewer);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    (*aViewer)->SetContainer(static_cast<nsIContentViewerContainer *>(this));
+    (*aViewer)->SetContainer(this);
     return NS_OK;
 }
 

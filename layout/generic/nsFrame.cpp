@@ -1812,31 +1812,31 @@ nsIFrame::BuildDisplayListForStackingContext(nsDisplayListBuilder* aBuilder,
   aBuilder->SetContainsBlendMode(false);
  
   if (isTransformed) {
+    const nsRect overflow = GetVisualOverflowRectRelativeToSelf();
     if (aBuilder->IsForPainting() &&
         nsDisplayTransform::ShouldPrerenderTransformedContent(aBuilder, this)) {
-      dirtyRect = GetVisualOverflowRectRelativeToSelf();
+      dirtyRect = overflow;
     } else {
-      // Trying to  back-transform arbitrary rects gives us really weird results. I believe 
-      // this is from points that lie beyond the vanishing point. As a workaround we transform t
-      // he overflow rect into screen space and compare in that coordinate system.
+      if (overflow.IsEmpty() && !Preserves3DChildren()) {
+        return;
+      }
+      // Trying to back-transform arbitrary rects gives us really weird results. I believe 
+      // this is from points that lie beyond the vanishing point. As a workaround we transform
+      // the overflow rect into screen space and compare in that coordinate system.
 
-      // Transform the overflow rect into screen space
-      nsRect overflow = GetVisualOverflowRectRelativeToSelf();
+      // Transform the overflow rect into screen space.
       nsPoint offset = aBuilder->ToReferenceFrame(this);
-      overflow += offset;
-      overflow = nsDisplayTransform::TransformRect(overflow, this, offset);
-
+      nsRect trans = nsDisplayTransform::TransformRect(overflow + offset, this, offset);
       dirtyRect += offset;
-
-      if (dirtyRect.Intersects(overflow)) {
+      if (dirtyRect.Intersects(trans)) {
         // If they intersect, we take our whole overflow rect. We could instead take the intersection
         // and then reverse transform it but I doubt this extra work is worthwhile.
-        dirtyRect = GetVisualOverflowRectRelativeToSelf();
+        dirtyRect = overflow;
       } else {
+        if (!Preserves3DChildren()) {
+          return;
+        }
         dirtyRect.SetEmpty();
-      }
-      if (!Preserves3DChildren() && !dirtyRect.Intersects(GetVisualOverflowRectRelativeToSelf())) {
-        return;
       }
     }
     inTransform = true;
@@ -2017,6 +2017,8 @@ nsIFrame::BuildDisplayListForStackingContext(nsDisplayListBuilder* aBuilder,
         new (aBuilder) nsDisplayBlendContainer(aBuilder, this, &resultList));
   }
 
+  CreateOwnLayerIfNeeded(aBuilder, &resultList);
+
   aList->AppendToTop(&resultList);
 }
 
@@ -2171,19 +2173,8 @@ nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder*   aBuilder,
   NS_ASSERTION(!isStackingContext || pseudoStackingContext,
                "Stacking contexts must also be pseudo-stacking-contexts");
 
-  // This controls later whether we build an nsDisplayWrapList or an
-  // nsDisplayFixedPosition. We check if we're already building a fixed-pos
-  // item and disallow nesting, to prevent the situation of bug #769541
-  // occurring.
-  // Don't build an nsDisplayFixedPosition if our root scroll frame is not
-  // active, that's pointless and the extra layer(s) created may be wasteful.
-  bool buildFixedPositionItem = disp->mPosition == NS_STYLE_POSITION_FIXED &&
-    !child->GetParent()->GetParent() && !aBuilder->IsInFixedPosition() &&
-    IsScrollFrameActive(PresContext()->PresShell()->GetRootScrollFrameAsScrollable()) &&
-    !isSVG;
-
   nsDisplayListBuilder::AutoBuildingDisplayList
-    buildingForChild(aBuilder, child, pseudoStackingContext, buildFixedPositionItem);
+    buildingForChild(aBuilder, child, pseudoStackingContext);
   DisplayListClipState::AutoClipMultiple clipState(aBuilder);
 
   if (savedOutOfFlowData) {
@@ -2265,31 +2256,11 @@ nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder*   aBuilder,
     // Genuine stacking contexts, and positioned pseudo-stacking-contexts,
     // go in this level.
     if (!list.IsEmpty()) {
-      // Make sure the root of a fixed position frame sub-tree gets the
-      // correct displaylist item type.
-      nsDisplayItem* item;
-      if (buildFixedPositionItem) {
-        item = new (aBuilder) nsDisplayFixedPosition(aBuilder, child, child, &list);
-      } else {
-        item = WrapInWrapList(aBuilder, child, &list);
-      }
+      nsDisplayItem* item = WrapInWrapList(aBuilder, child, &list);
       if (isSVG) {
         aLists.Content()->AppendNewToTop(item);
       } else {
         aLists.PositionedDescendants()->AppendNewToTop(item);
-      }
-
-      // Make sure that extra positioned descendants don't escape having
-      // their fixed-position metadata applied to them.
-      if (buildFixedPositionItem) {
-        while (!extraPositionedDescendants.IsEmpty()) {
-          item = extraPositionedDescendants.RemoveBottom();
-          nsDisplayList fixedPosDescendantList;
-          fixedPosDescendantList.AppendToTop(item);
-          aLists.PositionedDescendants()->AppendNewToTop(
-              new (aBuilder) nsDisplayFixedPosition(aBuilder, item->Frame(),
-                                                    child, &fixedPosDescendantList));
-        }
       }
     }
   } else if (!isSVG && disp->IsFloating(child)) {
@@ -4076,6 +4047,14 @@ nsFrame::ComputeSimpleTightBounds(gfxContext* aContext) const
     }
   }
   return r;
+}
+
+/* virtual */ nsresult
+nsIFrame::GetPrefWidthTightBounds(nsRenderingContext* aContext,
+                                  nscoord* aX,
+                                  nscoord* aXMost)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 /* virtual */ nsSize
@@ -7378,7 +7357,7 @@ nsIFrame::VerticalAlignEnum() const
     for (const nsIFrame* frame = this; frame; frame = frame->GetParent()) {
       dominantBaseline = frame->StyleSVGReset()->mDominantBaseline;
       if (dominantBaseline != NS_STYLE_DOMINANT_BASELINE_AUTO ||
-          frame->GetType() == nsGkAtoms::svgTextFrame) {
+          frame->GetType() == nsGkAtoms::svgTextFrame2) {
         break;
       }
     }
@@ -8085,7 +8064,9 @@ void
 nsIFrame::CreateOwnLayerIfNeeded(nsDisplayListBuilder* aBuilder, 
                                  nsDisplayList* aList)
 {
-  if (GetContent()->HasAttr(kNameSpaceID_None, nsGkAtoms::layer)) {
+  if (GetContent() &&
+      GetContent()->IsXUL() &&
+      GetContent()->HasAttr(kNameSpaceID_None, nsGkAtoms::layer)) {
     aList->AppendNewToTop(new (aBuilder) 
         nsDisplayOwnLayer(aBuilder, this, aList));
   }

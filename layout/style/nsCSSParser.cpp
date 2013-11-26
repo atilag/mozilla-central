@@ -3661,6 +3661,18 @@ CSSParserImpl::ParsePseudoSelector(int32_t&       aDataMask,
   nsCSSPseudoClasses::Type pseudoClassType =
     nsCSSPseudoClasses::GetPseudoType(pseudo);
 
+  if (!mUnsafeRulesEnabled &&
+      (pseudoElementType == nsCSSPseudoElements::ePseudo_mozNumberWrapper ||
+       pseudoElementType == nsCSSPseudoElements::ePseudo_mozNumberText ||
+       pseudoElementType == nsCSSPseudoElements::ePseudo_mozNumberSpinBox ||
+       pseudoElementType == nsCSSPseudoElements::ePseudo_mozNumberSpinUp ||
+       pseudoElementType == nsCSSPseudoElements::ePseudo_mozNumberSpinDown)) {
+    // Hide these pseudo-elements from content until we standardize them.
+    REPORT_UNEXPECTED_TOKEN(PEPseudoSelUnknown);
+    UngetToken();
+    return eSelectorParsingStatus_Error;
+  }
+
   // We currently allow :-moz-placeholder and ::-moz-placeholder. We have to
   // be a bit stricter regarding the pseudo-element parsing rules.
   if (pseudoElementType == nsCSSPseudoElements::ePseudo_mozPlaceholder &&
@@ -8525,6 +8537,16 @@ CSSParserImpl::ParseCounterData(nsCSSProperty aPropID)
 
     nsCSSValuePairList *cur = value.SetPairListValue();
     for (;;) {
+      // check for "none", "default" and the CSS-wide keywords,
+      // which can't be used as counter names
+      nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(mToken.mIdent);
+      if (keyword == eCSSKeyword_inherit ||
+          keyword == eCSSKeyword_default ||
+          keyword == eCSSKeyword_none ||
+          keyword == eCSSKeyword_unset ||
+          keyword == eCSSKeyword_initial) {
+        return false;
+      }
       cur->mXValue.SetStringValue(mToken.mIdent, eCSSUnit_Ident);
       if (!GetToken(true)) {
         break;
@@ -8989,8 +9011,20 @@ CSSParserImpl::ParseFontVariantLigatures(nsCSSValue& aValue)
                  MASK_END_VALUE,
                "incorrectly terminated array");
 
-  return ParseBitmaskValues(aValue, nsCSSProps::kFontVariantLigaturesKTable,
-                            maskLigatures);
+  bool parsed =
+    ParseBitmaskValues(aValue, nsCSSProps::kFontVariantLigaturesKTable,
+                       maskLigatures);
+
+  // if none value included, no other values are possible
+  if (parsed && eCSSUnit_Enumerated == aValue.GetUnit()) {
+    int32_t val = aValue.GetIntValue();
+    if ((val & NS_FONT_VARIANT_LIGATURES_NONE) &&
+        (val & ~int32_t(NS_FONT_VARIANT_LIGATURES_NONE))) {
+      parsed = false;
+    }
+  }
+
+  return parsed;
 }
 
 static const int32_t maskNumeric[] = {

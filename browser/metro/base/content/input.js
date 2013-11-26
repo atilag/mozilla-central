@@ -93,7 +93,6 @@ var TouchModule = {
 
     // capture phase events
     window.addEventListener("CancelTouchSequence", this, true);
-    window.addEventListener("dblclick", this, true);
     window.addEventListener("keydown", this, true);
     window.addEventListener("MozMouseHittest", this, true);
 
@@ -102,6 +101,9 @@ var TouchModule = {
     window.addEventListener("touchstart", this, false);
     window.addEventListener("touchmove", this, false);
     window.addEventListener("touchend", this, false);
+
+    Services.obs.addObserver(this, "Gesture:SingleTap", false);
+    Services.obs.addObserver(this, "Gesture:DoubleTap", false);
 
     try {
       this._treatMouseAsTouch = Services.prefs.getBoolPref(kDebugMouseInputPref);
@@ -143,20 +145,6 @@ var TouchModule = {
             break;
           case "touchend":
             this._onTouchEnd(aEvent);
-            break;
-          case "dblclick":
-            // XXX This will get picked up somewhere below us for "double tap to zoom"
-            // once we get omtc and the apzc. Currently though dblclick is delivered to
-            // content and triggers selection of text, so fire up the SelectionHelperUI
-            // once selection is present.
-            if (!InputSourceHelper.isPrecise &&
-                !SelectionHelperUI.isActive &&
-                !FindHelperUI.isActive) {
-              setTimeout(function () {
-                SelectionHelperUI.attachEditSession(Browser.selectedTab.browser,
-                                                    aEvent.clientX, aEvent.clientY);
-              }, 50);
-            }
             break;
           case "keydown":
             this._handleKeyDown(aEvent);
@@ -208,6 +196,16 @@ var TouchModule = {
       }, 50);
     }
   },
+
+  observe: function BrowserUI_observe(aSubject, aTopic, aData) {
+    switch (aTopic) {
+      case "Gesture:SingleTap":
+      case "Gesture:DoubleTap":
+        Browser.selectedBrowser.messageManager.sendAsyncMessage(aTopic, JSON.parse(aData));
+        break;
+    }
+  },
+
 
   sample: function sample(aTimeStamp) {
     this._waitingForPaint = false;

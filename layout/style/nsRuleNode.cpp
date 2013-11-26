@@ -104,7 +104,7 @@ nsRuleNode::ChildrenHashMatchEntry(PLDHashTable *aTable,
   return entry->mRuleNode->GetKey() == *key;
 }
 
-/* static */ PLDHashTableOps
+/* static */ const PLDHashTableOps
 nsRuleNode::ChildrenHashOps = {
   // It's probably better to allocate the table itself using malloc and
   // free rather than the pres shell's arena because the table doesn't
@@ -221,10 +221,11 @@ GetMetricsFor(nsPresContext* aPresContext,
   if (aUseUserFontSet) {
     fs = aPresContext->GetUserFontSet();
   }
+  gfxTextPerfMetrics *tp = aPresContext->GetTextPerfMetrics();
   nsRefPtr<nsFontMetrics> fm;
   aPresContext->DeviceContext()->GetMetricsFor(font,
                                                aStyleFont->mLanguage,
-                                               fs, *getter_AddRefs(fm));
+                                               fs, tp, *getter_AddRefs(fm));
   return fm.forget();
 }
 

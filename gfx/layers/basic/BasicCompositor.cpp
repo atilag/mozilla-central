@@ -104,40 +104,30 @@ protected:
                           nsIntPoint*) MOZ_OVERRIDE
   {
     AutoOpenSurface surf(OPEN_READ_ONLY, aImage);
-    mThebesSurface = ShadowLayerForwarder::OpenDescriptor(OPEN_READ_ONLY, aImage);
-    mThebesImage = mThebesSurface->GetAsImageSurface();
-    MOZ_ASSERT(mThebesImage);
-    mFormat = ImageFormatToSurfaceFormat(mThebesImage->Format());
-    mSurface = nullptr;
-    mSize = IntSize(mThebesImage->Width(), mThebesImage->Height());
+    nsRefPtr<gfxASurface> surface = ShadowLayerForwarder::OpenDescriptor(OPEN_READ_ONLY, aImage);
+    nsRefPtr<gfxImageSurface> image = surface->GetAsImageSurface();
+    mFormat = ImageFormatToSurfaceFormat(image->Format());
+    mSize = IntSize(image->Width(), image->Height());
+    mSurface = Factory::CreateWrappingDataSourceSurface(image->Data(),
+                                                        image->Stride(),
+                                                        mSize,
+                                                        mFormat);
   }
 
-  virtual void EnsureSurface() { }
-
-  virtual bool Lock() MOZ_OVERRIDE
-  {
-    EnsureSurface();
-    if (!mSurface) {
-      mSurface = Factory::CreateWrappingDataSourceSurface(mThebesImage->Data(),
-                                                          mThebesImage->Stride(),
-                                                          mSize,
-                                                          mFormat);
-    }
+  virtual bool EnsureSurface() {
     return true;
   }
 
+  virtual bool Lock() MOZ_OVERRIDE {
+    return EnsureSurface();
+  }
+
   virtual already_AddRefed<gfxImageSurface> GetAsSurface() MOZ_OVERRIDE {
-    if (!mThebesImage) {
-      mThebesImage = mThebesSurface->GetAsImageSurface();
-    }
-    nsRefPtr<gfxImageSurface> result = mThebesImage;
-    return result.forget();
+    return nullptr;
   }
 
   BasicCompositor *mCompositor;
   RefPtr<SourceSurface> mSurface;
-  nsRefPtr<gfxImageSurface> mThebesImage;
-  nsRefPtr<gfxASurface> mThebesSurface;
   IntSize mSize;
   SurfaceFormat mFormat;
 };
@@ -174,15 +164,18 @@ public:
     mSurface = nullptr;
   }
 
-  virtual void EnsureSurface() MOZ_OVERRIDE
+  virtual bool EnsureSurface() MOZ_OVERRIDE
   {
-    if (!mBuffer) {
-      return;
+    if (mSurface) {
+      return true;
     }
-    ConvertImageToRGB(*mBuffer);
+    if (!mBuffer) {
+      return false;
+    }
+    return ConvertImageToRGB(*mBuffer);
   }
 
-  void ConvertImageToRGB(const SurfaceDescriptor& aImage)
+  bool ConvertImageToRGB(const SurfaceDescriptor& aImage)
   {
     YCbCrImageDataDeserializer deserializer(aImage.get_YCbCrImage().data().get<uint8_t>());
     PlanarYCbCrData data;
@@ -194,22 +187,22 @@ public:
     if (size.width > PlanarYCbCrImage::MAX_DIMENSION ||
         size.height > PlanarYCbCrImage::MAX_DIMENSION) {
       NS_ERROR("Illegal image dest width or height");
-      return;
+      return false;
     }
 
-    mThebesSurface = mThebesImage =
-      new gfxImageSurface(size, format);
+    mSize = ToIntSize(size);
+    mFormat = (format == gfxImageFormatRGB24)
+              ? FORMAT_B8G8R8X8
+              : FORMAT_B8G8R8A8;
 
+    RefPtr<DataSourceSurface> surface = Factory::CreateDataSourceSurface(mSize, mFormat);
     gfxUtils::ConvertYCbCrToRGB(data, format, size,
-                                mThebesImage->Data(),
-                                mThebesImage->Stride());
+                                surface->GetData(),
+                                surface->Stride());
 
-    mSize = IntSize(size.width, size.height);
-    mFormat =
-      (format == gfxImageFormatARGB32) ? FORMAT_B8G8R8A8 :
-                                                   FORMAT_B8G8R8X8;
+    mSurface = surface;
+    return true;
   }
-
 };
 
 TemporaryRef<DeprecatedTextureHost>
@@ -418,9 +411,7 @@ BasicCompositor::DrawQuad(const gfx::Rect& aRect,
                           gfx::Float aOpacity,
                           const gfx::Matrix4x4 &aTransform)
 {
-  RefPtr<DrawTarget> buffer = mRenderTarget
-                              ? mRenderTarget->mDrawTarget
-                              : mDrawTarget;
+  RefPtr<DrawTarget> buffer = mRenderTarget->mDrawTarget;
 
   // For 2D drawing, |dest| and |buffer| are the same surface. For 3D drawing,
   // |dest| is a temporary surface.
@@ -468,7 +459,6 @@ BasicCompositor::DrawQuad(const gfx::Rect& aRect,
   Matrix maskTransform;
   if (aEffectChain.mSecondaryEffects[EFFECT_MASK]) {
     EffectMask *effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EFFECT_MASK].get());
-    static_cast<DeprecatedTextureHost*>(effectMask->mMaskTexture)->Lock();
     sourceMask = effectMask->mMaskTexture->AsSourceBasic()->GetSurface();
     MOZ_ASSERT(effectMask->mMaskTransform.Is2D(), "How did we end up with a 3D transform here?!");
     MOZ_ASSERT(!effectMask->mIs3D);
@@ -542,16 +532,12 @@ BasicCompositor::DrawQuad(const gfx::Rect& aRect,
     buffer->DrawSurface(temp, transformBounds, transformBounds);
   }
 
-  if (aEffectChain.mSecondaryEffects[EFFECT_MASK]) {
-    EffectMask *effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EFFECT_MASK].get());
-    static_cast<DeprecatedTextureHost*>(effectMask->mMaskTexture)->Unlock();
-  }
-
   buffer->PopClip();
 }
 
 void
-BasicCompositor::BeginFrame(const gfx::Rect *aClipRectIn,
+BasicCompositor::BeginFrame(const nsIntRegion& aInvalidRegion,
+                            const gfx::Rect *aClipRectIn,
                             const gfxMatrix& aTransform,
                             const gfx::Rect& aRenderBounds,
                             gfx::Rect *aClipRectOut /* = nullptr */,
@@ -562,6 +548,18 @@ BasicCompositor::BeginFrame(const gfx::Rect *aClipRectIn,
   Rect rect = Rect(0, 0, intRect.width, intRect.height);
   mWidgetSize = intRect.Size();
 
+  nsIntRect invalidRect = aInvalidRegion.GetBounds();
+  mInvalidRect = IntRect(invalidRect.x, invalidRect.y, invalidRect.width, invalidRect.height);
+  mInvalidRegion = aInvalidRegion;
+
+  if (aRenderBoundsOut) {
+    *aRenderBoundsOut = Rect();
+  }
+
+  if (mInvalidRect.width <= 0 || mInvalidRect.height <= 0) {
+    return;
+  }
+
   if (mCopyTarget) {
     // If we have a copy target, then we don't have a widget-provided mDrawTarget (currently). Create a dummy
     // placeholder so that CreateRenderTarget() works.
@@ -570,16 +568,21 @@ BasicCompositor::BeginFrame(const gfx::Rect *aClipRectIn,
     mDrawTarget = mWidget->StartRemoteDrawing();
   }
   if (!mDrawTarget) {
-    if (aRenderBoundsOut) {
-      *aRenderBoundsOut = Rect();
-    }
     return;
   }
 
   // Setup an intermediate render target to buffer all compositing. We will
   // copy this into mDrawTarget (the widget), and/or mCopyTarget in EndFrame()
-  RefPtr<CompositingRenderTarget> target = CreateRenderTarget(IntRect(0, 0, intRect.width, intRect.height), INIT_MODE_CLEAR);
+  RefPtr<CompositingRenderTarget> target = CreateRenderTarget(mInvalidRect, INIT_MODE_CLEAR);
   SetRenderTarget(target);
+
+  // We only allocate a surface sized to the invalidated region, so we need to
+  // translate future coordinates.
+  Matrix transform;
+  transform.Translate(-invalidRect.x, -invalidRect.y);
+  mRenderTarget->mDrawTarget->SetTransform(transform);
+
+  gfxUtils::ClipToRegion(mRenderTarget->mDrawTarget, aInvalidRegion);
 
   if (aRenderBoundsOut) {
     *aRenderBoundsOut = rect;
@@ -599,20 +602,26 @@ void
 BasicCompositor::EndFrame()
 {
   mRenderTarget->mDrawTarget->PopClip();
+  mRenderTarget->mDrawTarget->PopClip();
 
+  // Note: Most platforms require us to buffer drawing to the widget surface.
+  // That's why we don't draw to mDrawTarget directly.
   RefPtr<SourceSurface> source = mRenderTarget->mDrawTarget->Snapshot();
-  if (mCopyTarget) {
-    mCopyTarget->CopySurface(source,
-                             IntRect(0, 0, mWidgetSize.width, mWidgetSize.height),
-                             IntPoint(0, 0));
-  } else {
-    // Most platforms require us to buffer drawing to the widget surface.
-    // That's why we don't draw to mDrawTarget directly.
-    mDrawTarget->CopySurface(source,
-	                           IntRect(0, 0, mWidgetSize.width, mWidgetSize.height),
-			                       IntPoint(0, 0));
+  RefPtr<DrawTarget> dest(mCopyTarget ? mCopyTarget : mDrawTarget);
+  
+  // The source DrawTarget is clipped to the invalidation region, so we have
+  // to copy the individual rectangles in the region or else we'll draw blank
+  // pixels.
+  nsIntRegionRectIterator iter(mInvalidRegion);
+  for (const nsIntRect *r = iter.Next(); r; r = iter.Next()) {
+    dest->CopySurface(source,
+                      IntRect(r->x - mInvalidRect.x, r->y - mInvalidRect.y, r->width, r->height),
+                      IntPoint(r->x, r->y));
+  }
+  if (!mCopyTarget) {
     mWidget->EndRemoteDrawing();
   }
+
   mDrawTarget = nullptr;
   mRenderTarget = nullptr;
 }
@@ -620,6 +629,7 @@ BasicCompositor::EndFrame()
 void
 BasicCompositor::AbortFrame()
 {
+  mRenderTarget->mDrawTarget->PopClip();
   mRenderTarget->mDrawTarget->PopClip();
   mDrawTarget = nullptr;
   mRenderTarget = nullptr;

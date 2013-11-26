@@ -899,6 +899,7 @@ class Shape : public gc::BarrieredCell<Shape>
     JS_ENUM_HEADER(SlotInfo, uint32_t)
     {
         /* Number of fixed slots in objects with this shape. */
+        // FIXED_SLOTS_MAX is the biggest count of fixed slots a Shape can store
         FIXED_SLOTS_MAX        = 0x1f,
         FIXED_SLOTS_SHIFT      = 27,
         FIXED_SLOTS_MASK       = uint32_t(FIXED_SLOTS_MAX << FIXED_SLOTS_SHIFT),
@@ -1166,10 +1167,14 @@ class Shape : public gc::BarrieredCell<Shape>
         return JSID_IS_EMPTY(propid_);
     }
 
-    uint32_t slotSpan() const {
+    uint32_t slotSpan(const Class *clasp) const {
         JS_ASSERT(!inDictionary());
-        uint32_t free = JSSLOT_FREE(getObjectClass());
+        uint32_t free = JSSLOT_FREE(clasp);
         return hasMissingSlot() ? free : Max(free, maybeSlot() + 1);
+    }
+
+    uint32_t slotSpan() const {
+        return slotSpan(getObjectClass());
     }
 
     void setSlot(uint32_t slot) {
@@ -1256,10 +1261,12 @@ class Shape : public gc::BarrieredCell<Shape>
     uint32_t entryCount() {
         if (hasTable())
             return table().entryCount;
+        return entryCountForCompilation();
+    }
 
-        Shape *shape = this;
+    uint32_t entryCountForCompilation() {
         uint32_t count = 0;
-        for (Shape::Range<NoGC> r(shape); !r.empty(); r.popFront())
+        for (Shape::Range<NoGC> r(this); !r.empty(); r.popFront())
             ++count;
         return count;
     }
@@ -1305,6 +1312,8 @@ class Shape : public gc::BarrieredCell<Shape>
         JS_STATIC_ASSERT(offsetof(Shape, base_) == offsetof(js::shadow::Shape, base));
         JS_STATIC_ASSERT(offsetof(Shape, slotInfo) == offsetof(js::shadow::Shape, slotInfo));
         JS_STATIC_ASSERT(FIXED_SLOTS_SHIFT == js::shadow::Shape::FIXED_SLOTS_SHIFT);
+        static_assert(js::shadow::Object::MAX_FIXED_SLOTS <= FIXED_SLOTS_MAX,
+                      "verify numFixedSlots() bitfield is big enough");
     }
 };
 

@@ -28,7 +28,6 @@
 #include "nsBlockFrame.h"
 #include "nsViewportFrame.h"
 #include "nsSVGTextFrame2.h"
-#include "nsSVGTextPathFrame.h"
 #include "StickyScrollContainer.h"
 #include "nsIRootBox.h"
 #include "nsIDOMMutationEvent.h"
@@ -204,10 +203,7 @@ DoApplyRenderingChangeToTree(nsIFrame* aFrame,
       }
     }
     if (aChange & nsChangeHint_UpdateTextPath) {
-      if (aFrame->GetType() == nsGkAtoms::svgTextPathFrame) {
-        // Invalidate and reflow the entire nsSVGTextFrame:
-        static_cast<nsSVGTextPathFrame*>(aFrame)->NotifyGlyphMetricsChange();
-      } else if (aFrame->IsSVGText()) {
+      if (aFrame->IsSVGText()) {
         // Invalidate and reflow the entire nsSVGTextFrame2:
         NS_ASSERTION(aFrame->GetContent()->IsSVG(nsGkAtoms::textPath),
                      "expected frame for a <textPath> element");
@@ -693,6 +689,7 @@ RestyleManager::ProcessRestyledFrames(nsStyleChangeList& aChangeList)
         ApplyRenderingChangeToTree(mPresContext, frame, hint);
       }
       if ((hint & nsChangeHint_RecomputePosition) && !didReflowThisFrame) {
+        ActiveLayerTracker::NotifyOffsetRestyle(frame);
         // It is possible for this to fall back to a reflow
         if (!RecomputePosition(frame)) {
           didReflowThisFrame = true;
@@ -1715,6 +1712,21 @@ ElementForStyleContext(nsIContent* aParentContent,
                "Color swatch's grandparent should be nsColorControlFrame");
 
     return grandparentFrame->GetContent()->AsElement();
+  }
+
+  if (aPseudoType == nsCSSPseudoElements::ePseudo_mozNumberText ||
+      aPseudoType == nsCSSPseudoElements::ePseudo_mozNumberWrapper ||
+      aPseudoType == nsCSSPseudoElements::ePseudo_mozNumberSpinBox ||
+      aPseudoType == nsCSSPseudoElements::ePseudo_mozNumberSpinUp ||
+      aPseudoType == nsCSSPseudoElements::ePseudo_mozNumberSpinDown) {
+    // Get content for nearest nsNumberControlFrame:
+    nsIFrame* f = aFrame->GetParent();
+    MOZ_ASSERT(f);
+    while (f->GetType() != nsGkAtoms::numberControlFrame) {
+      f = f->GetParent();
+      MOZ_ASSERT(f);
+    }
+    return f->GetContent()->AsElement();
   }
 
   nsIContent* content = aParentContent ? aParentContent : aFrame->GetContent();

@@ -167,6 +167,7 @@ public:
                                 const CSSRect& aRect);
     virtual bool RecvUpdateZoomConstraints(const uint32_t& aPresShellId,
                                            const ViewID& aViewId,
+                                           const bool& aIsRoot,
                                            const bool& aAllowZoom,
                                            const CSSToScreenScale& aMinZoom,
                                            const CSSToScreenScale& aMaxZoom);
@@ -195,9 +196,9 @@ public:
     void Show(const nsIntSize& size);
     void UpdateDimensions(const nsRect& rect, const nsIntSize& size);
     void UpdateFrame(const layers::FrameMetrics& aFrameMetrics);
-    void HandleDoubleTap(const CSSIntPoint& aPoint);
-    void HandleSingleTap(const CSSIntPoint& aPoint);
-    void HandleLongTap(const CSSIntPoint& aPoint);
+    void HandleDoubleTap(const CSSIntPoint& aPoint, int32_t aModifiers);
+    void HandleSingleTap(const CSSIntPoint& aPoint, int32_t aModifiers);
+    void HandleLongTap(const CSSIntPoint& aPoint, int32_t aModifiers);
     void Activate();
     void Deactivate();
 

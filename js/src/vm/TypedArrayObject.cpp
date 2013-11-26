@@ -331,11 +331,13 @@ GetViewListRef(ArrayBufferObject *obj)
     return reinterpret_cast<OldObjectRepresentationHack*>(obj->getElementsHeader())->views;
 }
 
-bool
-ArrayBufferObject::neuterViews(JSContext *cx)
+/* static */ bool
+ArrayBufferObject::neuterViews(JSContext *cx, Handle<ArrayBufferObject*> buffer)
 {
     ArrayBufferViewObject *view;
-    for (view = GetViewList(this); view; view = view->nextView()) {
+    size_t numViews = 0;
+    for (view = GetViewList(buffer); view; view = view->nextView()) {
+        numViews++;
         view->neuter();
 
         // Notify compiled jit code that the base pointer has moved.
@@ -344,9 +346,28 @@ ArrayBufferObject::neuterViews(JSContext *cx)
 
     // neuterAsmJSArrayBuffer adjusts state specific to the ArrayBuffer data
     // itself, but it only affects the behavior of views
-    if (isAsmJSArrayBuffer()) {
-        if (!ArrayBufferObject::neuterAsmJSArrayBuffer(cx, *this))
+    if (buffer->isAsmJSArrayBuffer()) {
+        if (!ArrayBufferObject::neuterAsmJSArrayBuffer(cx, *buffer))
             return false;
+    }
+
+    // Remove buffer from the list of buffers with > 1 view.
+    if (numViews > 1 && GetViewList(buffer)->bufferLink() != UNSET_BUFFER_LINK) {
+        ArrayBufferObject *prev = buffer->compartment()->gcLiveArrayBuffers;
+        if (prev == buffer) {
+            buffer->compartment()->gcLiveArrayBuffers = GetViewList(prev)->bufferLink();
+        } else {
+            for (ArrayBufferObject *b = GetViewList(prev)->bufferLink();
+                 b;
+                 b = GetViewList(b)->bufferLink())
+            {
+                if (b == buffer) {
+                    GetViewList(prev)->setBufferLink(GetViewList(b)->bufferLink());
+                    break;
+                }
+                prev = b;
+            }
+        }
     }
 
     return true;
@@ -684,7 +705,7 @@ ArrayBufferObject::stealContents(JSContext *cx, Handle<ArrayBufferObject*> buffe
 
     // Neuter the views, which may also mprotect(PROT_NONE) the buffer. So do
     // it after copying out the data.
-    if (!buffer->neuterViews(cx))
+    if (!ArrayBufferObject::neuterViews(cx, buffer))
         return false;
 
     if (!own) {
@@ -4041,7 +4062,7 @@ JS_NeuterArrayBuffer(JSContext *cx, HandleObject obj)
     }
 
     Rooted<ArrayBufferObject*> buffer(cx, &obj->as<ArrayBufferObject>());
-    if (!buffer->neuterViews(cx))
+    if (!ArrayBufferObject::neuterViews(cx, buffer))
         return false;
     buffer->neuter(cx);
     return true;

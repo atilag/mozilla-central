@@ -3989,6 +3989,12 @@ js::ToStringSlow<CanGC>(ExclusiveContext *cx, HandleValue arg);
 template JSString *
 js::ToStringSlow<NoGC>(ExclusiveContext *cx, Value arg);
 
+JS_PUBLIC_API(JSString *)
+js::ToStringSlow(JSContext *cx, HandleValue v)
+{
+    return ToStringSlow<CanGC>(cx, v);
+}
+
 JSString *
 js::ValueToSource(JSContext *cx, HandleValue v)
 {
@@ -4087,13 +4093,20 @@ CompareStringsImpl(JSContext *cx, JSString *str1, JSString *str2, int32_t *resul
     if (!s2)
         return false;
 
-    return CompareChars(s1, str1->length(), s2, str2->length(), result);
+    *result = CompareChars(s1, str1->length(), s2, str2->length());
+    return true;
 }
 
 bool
 js::CompareStrings(JSContext *cx, JSString *str1, JSString *str2, int32_t *result)
 {
     return CompareStringsImpl(cx, str1, str2, result);
+}
+
+int32_t
+js::CompareAtoms(JSAtom *atom1, JSAtom *atom2)
+{
+    return CompareChars(atom1->chars(), atom1->length(), atom2->chars(), atom2->length());
 }
 
 bool

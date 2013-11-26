@@ -28,7 +28,7 @@ import time
 import traceback
 import urllib2
 
-from automationutils import environment, getDebuggerInfo, isURL, KeyValueParseError, parseKeyValue, processLeakLog, systemMemory, dumpScreen
+from automationutils import environment, getDebuggerInfo, isURL, KeyValueParseError, parseKeyValue, processLeakLog, systemMemory, dumpScreen, ShutdownLeaks
 from datetime import datetime
 from manifestparser import TestManifest
 from mochitest_options import MochitestOptions
@@ -344,6 +344,12 @@ class MochitestUtilsMixin(object):
         self.urlOpts.append("runSlower=true")
       if options.debugOnFailure:
         self.urlOpts.append("debugOnFailure=true")
+      if options.dumpOutputDirectory:
+        self.urlOpts.append("dumpOutputDirectory=%s" % encodeURIComponent(options.dumpOutputDirectory))
+      if options.dumpAboutMemoryAfterTest:
+        self.urlOpts.append("dumpAboutMemoryAfterTest=true")
+      if options.dumpDMDAfterTest:
+        self.urlOpts.append("dumpDMDAfterTest=true")
 
   def buildTestPath(self, options):
     """ Build the url path to the specific test harness and test file or directory
@@ -353,10 +359,13 @@ class MochitestUtilsMixin(object):
       manifest = TestManifest(strict=False)
       manifest.read(options.manifestFile)
       # Bug 883858 - return all tests including disabled tests
-      tests = manifest.active_tests(disabled=False, **mozinfo.info)
+      tests = manifest.active_tests(disabled=True, **mozinfo.info)
+      # We need to ensure we match on a complete directory name matching the
+      # test root, and not a substring somewhere else in the path.
+      test_root = os.path.sep + self.getTestRoot(options) + os.path.sep
       paths = []
       for test in tests:
-        tp = test['path'].split(self.getTestRoot(options), 1)[1].strip('/')
+        tp = test['path'].split(test_root, 1)[1].replace('\\', '/').strip('/')
 
         # Filter out tests if we are using --test-path
         if options.testPath and not tp.startswith(options.testPath):
@@ -434,15 +443,6 @@ class MochitestUtilsMixin(object):
       else:
         log.warning("runtests.py | Failed to copy %s to profile", abspath)
 
-  def copyTestsJarToProfile(self, options):
-    """ copy tests.jar to the profile directory so we can auto register it in the .xul harness """
-    testsJarFile = os.path.join(SCRIPT_DIR, "tests.jar")
-    if not os.path.isfile(testsJarFile):
-      return False
-
-    shutil.copy2(testsJarFile, options.profilePath)
-    return True
-
   def installChromeJar(self, chrome, options):
     """
       copy mochijar directory to profile as an extension so we have chrome://mochikit for all harness code
@@ -472,18 +472,13 @@ toolbar#nav-bar {
     with open(os.path.join(options.profilePath, "userChrome.css"), "a") as chromeFile:
       chromeFile.write(chrome)
 
-    # Call copyTestsJarToProfile(), Write tests.manifest.
     manifest = os.path.join(options.profilePath, "tests.manifest")
     with open(manifest, "w") as manifestFile:
-      if self.copyTestsJarToProfile(options):
-        # Register tests.jar.
-        manifestFile.write("content mochitests jar:tests.jar!/content/\n");
-      else:
-        # Register chrome directory.
-        chrometestDir = os.path.abspath(".") + "/"
-        if mozinfo.isWin:
-          chrometestDir = "file:///" + chrometestDir.replace("\\", "/")
-        manifestFile.write("content mochitests %s contentaccessible=yes\n" % chrometestDir)
+      # Register chrome directory.
+      chrometestDir = os.path.abspath(".") + "/"
+      if mozinfo.isWin:
+        chrometestDir = "file:///" + chrometestDir.replace("\\", "/")
+      manifestFile.write("content mochitests %s contentaccessible=yes\n" % chrometestDir)
 
       if options.testingModulesDir is not None:
         manifestFile.write("resource testing-common file:///%s\n" %
@@ -633,9 +628,10 @@ class Mochitest(MochitestUtilsMixin):
     self.copyExtraFilesToProfile(options)
     return manifest
 
-  def buildBrowserEnv(self, options):
+  def buildBrowserEnv(self, options, debugger=False):
     """build the environment variables for the specific test and operating system"""
-    browserEnv = self.environment(xrePath=options.xrePath)
+    browserEnv = self.environment(xrePath=options.xrePath, debugger=debugger,
+                                  dmdPath=options.dmdPath)
 
     # These variables are necessary for correct application startup; change
     # via the commandline at your own risk.
@@ -764,7 +760,8 @@ class Mochitest(MochitestUtilsMixin):
              debuggerInfo=None,
              symbolsPath=None,
              timeout=-1,
-             onLaunch=None):
+             onLaunch=None,
+             webapprtChrome=False):
     """
     Run the app, log the duration it took to execute, return the status code.
     Kills the app if it runs for longer than |maxTime| seconds, or outputs nothing for |timeout| seconds.
@@ -840,11 +837,17 @@ class Mochitest(MochitestUtilsMixin):
     if testUrl:
        args.append(testUrl)
 
+    if mozinfo.info["debug"] and not webapprtChrome:
+      shutdownLeaks = ShutdownLeaks(log.info)
+    else:
+      shutdownLeaks = None
+
     # create an instance to process the output
     outputHandler = self.OutputHandler(harness=self,
                                        utilityPath=utilityPath,
                                        symbolsPath=symbolsPath,
                                        dump_screen_on_timeout=not debuggerInfo,
+                                       shutdownLeaks=shutdownLeaks,
       )
 
     def timeoutHandler():
@@ -955,7 +958,7 @@ class Mochitest(MochitestUtilsMixin):
 
     self.leak_report_file = os.path.join(options.profilePath, "runtests_leaks.log")
 
-    browserEnv = self.buildBrowserEnv(options)
+    browserEnv = self.buildBrowserEnv(options, debuggerInfo is not None)
     if browserEnv is None:
       return 1
 
@@ -1020,7 +1023,8 @@ class Mochitest(MochitestUtilsMixin):
                            debuggerInfo=debuggerInfo,
                            symbolsPath=options.symbolsPath,
                            timeout=timeout,
-                           onLaunch=onLaunch
+                           onLaunch=onLaunch,
+                           webapprtChrome=options.webapprtChrome
                            )
     except KeyboardInterrupt:
       log.info("runtests.py | Received keyboard interrupt.\n");
@@ -1054,7 +1058,7 @@ class Mochitest(MochitestUtilsMixin):
 
   class OutputHandler(object):
     """line output handler for mozrunner"""
-    def __init__(self, harness, utilityPath, symbolsPath=None, dump_screen_on_timeout=True):
+    def __init__(self, harness, utilityPath, symbolsPath=None, dump_screen_on_timeout=True, shutdownLeaks=None):
       """
       harness -- harness instance
       dump_screen_on_timeout -- whether to dump the screen on timeout
@@ -1063,6 +1067,7 @@ class Mochitest(MochitestUtilsMixin):
       self.utilityPath = utilityPath
       self.symbolsPath = symbolsPath
       self.dump_screen_on_timeout = dump_screen_on_timeout
+      self.shutdownLeaks = shutdownLeaks
 
       # perl binary to use
       self.perl = which('perl')
@@ -1092,6 +1097,7 @@ class Mochitest(MochitestUtilsMixin):
               self.record_last_test,
               self.dumpScreenOnTimeout,
               self.metro_subprocess_id,
+              self.trackShutdownLeaks,
               self.log,
               ]
 
@@ -1140,6 +1146,9 @@ class Mochitest(MochitestUtilsMixin):
         if status and not didTimeout:
           log.info("TEST-UNEXPECTED-FAIL | runtests.py | Stack fixer process exited with code %d during test run", status)
 
+      if self.shutdownLeaks:
+        self.shutdownLeaks.process()
+
 
     # output line handlers:
     # these take a line and return a line
@@ -1171,6 +1180,11 @@ class Mochitest(MochitestUtilsMixin):
         if index != -1:
           self.browserProcessId = line[index+1:].rstrip()
           log.info("INFO | runtests.py | metro browser sub process id detected: %s", self.browserProcessId)
+      return line
+
+    def trackShutdownLeaks(self, line):
+      if self.shutdownLeaks:
+        self.shutdownLeaks.log(line)
       return line
 
     def log(self, line):

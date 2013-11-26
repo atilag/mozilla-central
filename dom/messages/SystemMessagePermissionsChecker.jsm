@@ -74,6 +74,9 @@ this.SystemMessagePermissionsTable = {
   "sms-delivery-success": {
     "sms": []
   },
+  "sms-read-success": {
+    "sms": []
+  },
   "sms-received": {
     "sms": []
   },
@@ -103,7 +106,8 @@ this.SystemMessagePermissionsTable = {
   },
   "nfc-powerlevel-change": {
     "settings": ["read", "write"]
-  }
+  },
+  "rtsp-open-video": {},
 };
 
 this.SystemMessagePermissionsChecker = {

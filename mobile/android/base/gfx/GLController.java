@@ -8,7 +8,7 @@ package org.mozilla.gecko.gfx;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoEvent;
 import org.mozilla.gecko.GeckoThread;
-import org.mozilla.gecko.mozglue.GeneratableAndroidBridgeTarget;
+import org.mozilla.gecko.mozglue.generatorannotations.WrapElementForJNI;
 import org.mozilla.gecko.util.ThreadUtils;
 
 import android.util.Log;
@@ -18,6 +18,48 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.egl.EGLContext;
 import javax.microedition.khronos.egl.EGLDisplay;
 import javax.microedition.khronos.egl.EGLSurface;
+
+/**
+ * EGLPreloadingThread is purely a preloading optimization, not something
+ * we rely on for anything else than performance. We will be initializing
+ * EGL in GLController::initEGL() when we need it, but having EGL initialization
+ * already previously done by EGLPreloadingThread::run() will make it much
+ * faster for GLController to do again.
+ *
+ * For example, here are some timings recorded on two devices:
+ *
+ * Device                 | EGLPreloadingThread::run() | GLController::initEGL()
+ * -----------------------+----------------------------+------------------------
+ * Nexus S (Android 2.3)  | ~ 80 ms                    | < 0.1 ms
+ * Nexus 10 (Android 4.3) | ~ 35 ms                    | < 0.1 ms
+ */
+class EGLPreloadingThread extends Thread
+{
+    private static final String LOGTAG = "EGLPreloadingThread";
+    private EGL10 mEGL;
+    private EGLDisplay mEGLDisplay;
+
+    public EGLPreloadingThread()
+    {
+    }
+
+    @Override
+    public void run()
+    {
+        mEGL = (EGL10)EGLContext.getEGL();
+        mEGLDisplay = mEGL.eglGetDisplay(EGL10.EGL_DEFAULT_DISPLAY);
+        if (mEGLDisplay == EGL10.EGL_NO_DISPLAY) {
+            Log.w(LOGTAG, "Can't get EGL display!");
+            return;
+        }
+
+        int[] returnedVersion = new int[2];
+        if (!mEGL.eglInitialize(mEGLDisplay, returnedVersion)) {
+            Log.w(LOGTAG, "eglInitialize failed");
+            return;
+        }
+    }
+}
 
 /**
  * This class is a singleton that tracks EGL and compositor things over
@@ -36,6 +78,7 @@ public class GLController {
     private static GLController sInstance;
 
     private LayerView mView;
+    private boolean mServerSurfaceValid;
     private int mWidth, mHeight;
 
     /* This is written by the compositor thread (while the UI thread
@@ -45,6 +88,8 @@ public class GLController {
     private EGL10 mEGL;
     private EGLDisplay mEGLDisplay;
     private EGLConfig mEGLConfig;
+    private EGLPreloadingThread mEGLPreloadingThread;
+    private EGLSurface mEGLSurfaceForCompositor;
 
     private static final int LOCAL_EGL_OPENGL_ES2_BIT = 4;
 
@@ -67,6 +112,8 @@ public class GLController {
     };
 
     private GLController() {
+        mEGLPreloadingThread = new EGLPreloadingThread();
+        mEGLPreloadingThread.start();
     }
 
     static GLController getInstance(LayerView view) {
@@ -80,6 +127,13 @@ public class GLController {
     synchronized void serverSurfaceDestroyed() {
         ThreadUtils.assertOnUiThread();
         Log.w(LOGTAG, "GLController::serverSurfaceDestroyed() with mCompositorCreated=" + mCompositorCreated);
+
+        mServerSurfaceValid = false;
+
+        if (mEGLSurfaceForCompositor != null) {
+          mEGL.eglDestroySurface(mEGLDisplay, mEGLSurfaceForCompositor);
+          mEGLSurfaceForCompositor = null;
+        }
 
         // We need to coordinate with Gecko when pausing composition, to ensure
         // that Gecko never executes a draw event while the compositor is paused.
@@ -101,8 +155,19 @@ public class GLController {
 
         mWidth = newWidth;
         mHeight = newHeight;
+        mServerSurfaceValid = true;
 
-        updateCompositor();
+        // we defer to a runnable the task of updating the compositor, because this is going to
+        // call back into createEGLSurfaceForCompositor, which will try to create an EGLSurface
+        // against mView, which we suspect might fail if called too early. By posting this to
+        // mView, we hope to ensure that it is deferred until mView is actually "ready" for some
+        // sense of "ready".
+        mView.post(new Runnable() {
+            @Override
+            public void run() {
+                updateCompositor();
+            }
+        });
     }
 
     void updateCompositor() {
@@ -115,6 +180,10 @@ public class GLController {
             // we can handle that gracefully (i.e. the compositor will remain paused).
             resumeCompositor(mWidth, mHeight);
             Log.w(LOGTAG, "done GLController::updateCompositor with compositor resume");
+            return;
+        }
+
+        if (!AttemptPreallocateEGLSurfaceForCompositor()) {
             return;
         }
 
@@ -135,15 +204,49 @@ public class GLController {
         mCompositorCreated = true;
     }
 
+    public boolean isServerSurfaceValid() {
+        return mServerSurfaceValid;
+    }
+
+    public boolean isCompositorCreated() {
+        return mCompositorCreated;
+    }
+
     private void initEGL() {
         if (mEGL != null) {
             return;
         }
+
+        // This join() should not be necessary, but makes this code a bit easier to think about.
+        // The EGLPreloadingThread should long be done by now, and even if it's not,
+        // it shouldn't be a problem to be initalizing EGL from two different threads.
+        // Still, having this join() here means that we don't have to wonder about what
+        // kind of caveats might exist with EGL initialization reentrancy on various drivers.
+        try {
+            mEGLPreloadingThread.join();
+        } catch (InterruptedException e) {
+            Log.w(LOGTAG, "EGLPreloadingThread interrupted", e);
+        }
+
         mEGL = (EGL10)EGLContext.getEGL();
 
         mEGLDisplay = mEGL.eglGetDisplay(EGL10.EGL_DEFAULT_DISPLAY);
         if (mEGLDisplay == EGL10.EGL_NO_DISPLAY) {
             Log.w(LOGTAG, "Can't get EGL display!");
+            return;
+        }
+
+        // while calling eglInitialize here should not be necessary as it was already called
+        // by the EGLPreloadingThread, it really doesn't cost much to call it again here,
+        // and makes this code easier to think about: EGLPreloadingThread is only a
+        // preloading optimization, not something we rely on for anything else.
+        //
+        // Also note that while calling eglInitialize isn't necessary on Android 4.x
+        // (at least Android's HardwareRenderer does it for us already), it is necessary
+        // on Android 2.x.
+        int[] returnedVersion = new int[2];
+        if (!mEGL.eglInitialize(mEGLDisplay, returnedVersion)) {
+            Log.w(LOGTAG, "eglInitialize failed");
             return;
         }
 
@@ -193,10 +296,24 @@ public class GLController {
         throw new GLControllerException("No suitable EGL configuration found");
     }
 
-    @GeneratableAndroidBridgeTarget(allowMultithread = true, stubName = "CreateEGLSurfaceForCompositorWrapper")
-    private EGLSurface createEGLSurfaceForCompositor() {
-        initEGL();
-        return mEGL.eglCreateWindowSurface(mEGLDisplay, mEGLConfig, mView.getNativeWindow(), null);
+    private synchronized boolean AttemptPreallocateEGLSurfaceForCompositor() {
+        if (mEGLSurfaceForCompositor == null) {
+            initEGL();
+            try {
+                mEGLSurfaceForCompositor = mEGL.eglCreateWindowSurface(mEGLDisplay, mEGLConfig, mView.getNativeWindow(), null);
+            } catch (Exception e) {
+                Log.e(LOGTAG, "eglCreateWindowSurface threw", e);
+            }
+        }
+        return mEGLSurfaceForCompositor != null;
+    }
+
+    @WrapElementForJNI(allowMultithread = true, stubName = "CreateEGLSurfaceForCompositorWrapper")
+    private synchronized EGLSurface createEGLSurfaceForCompositor() {
+        AttemptPreallocateEGLSurfaceForCompositor();
+        EGLSurface result = mEGLSurfaceForCompositor;
+        mEGLSurfaceForCompositor = null;
+        return result;
     }
 
     private String getEGLError() {

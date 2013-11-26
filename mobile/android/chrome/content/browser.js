@@ -20,6 +20,7 @@ Cu.import("resource://gre/modules/PermissionPromptHelper.jsm");
 Cu.import("resource://gre/modules/ContactService.jsm");
 Cu.import("resource://gre/modules/NotificationDB.jsm");
 Cu.import("resource://gre/modules/SpatialNavigation.jsm");
+Cu.import("resource://gre/modules/UITelemetry.jsm");
 
 #ifdef ACCESSIBILITY
 Cu.import("resource://gre/modules/accessibility/AccessFu.jsm");
@@ -327,7 +328,6 @@ var BrowserApp = {
     IndexedDB.init();
     HealthReportStatusListener.init();
     XPInstallObserver.init();
-    ClipboardHelper.init();
     CharacterEncoding.init();
     ActivityObserver.init();
     WebappsUI.init();
@@ -337,6 +337,7 @@ var BrowserApp = {
     DesktopUserAgent.init();
     Distribution.init();
     Tabs.init();
+    UITelemetry.init();
 #ifdef ACCESSIBILITY
     AccessFu.attach(window);
 #endif
@@ -2102,8 +2103,11 @@ var NativeWindow = {
         this._target = null;
         BrowserEventHandler._cancelTapHighlight();
 
-        if (SelectionHandler.canSelect(target))
-          SelectionHandler.startSelection(target, aX, aY);
+        if (SelectionHandler.canSelect(target)) {
+          if (!SelectionHandler.startSelection(target, aX, aY)) {
+            SelectionHandler.attachCaret(target);
+          }
+        }
       }
     },
 
@@ -4388,12 +4392,7 @@ var BrowserEventHandler = {
             this._sendMouseEvent("mousedown", element, x, y);
             this._sendMouseEvent("mouseup",   element, x, y);
 
-            // See if its an input element, and it isn't disabled, nor handled by Android native dialog
-            if (!element.disabled &&
-                !InputWidgetHelper.hasInputWidget(element) &&
-                ((element instanceof HTMLInputElement && element.mozIsTextField(false)) ||
-                (element instanceof HTMLTextAreaElement)))
-              SelectionHandler.attachCaret(element);
+            SelectionHandler.attachCaret(element);
 
             // scrollToFocusedInput does its own checks to find out if an element should be zoomed into
             BrowserApp.scrollToFocusedInput(BrowserApp.selectedBrowser);
@@ -6181,36 +6180,6 @@ var ClipboardHelper = {
   // Recorded so search with option can be removed/replaced when default engine changed.
   _searchMenuItem: -1,
 
-  init: function() {
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.copy"), ClipboardHelper.getCopyContext(false), ClipboardHelper.copy.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.copyAll"), ClipboardHelper.getCopyContext(true), ClipboardHelper.copy.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.selectWord"), ClipboardHelper.selectWordContext, ClipboardHelper.selectWord.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.selectAll"), ClipboardHelper.selectAllContext, ClipboardHelper.selectAll.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.share"), ClipboardHelper.shareContext, ClipboardHelper.share.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.paste"), ClipboardHelper.pasteContext, ClipboardHelper.paste.bind(ClipboardHelper));
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.changeInputMethod"), NativeWindow.contextmenus.textContext, ClipboardHelper.inputMethod.bind(ClipboardHelper));
-
-    // We add this contextmenu item right before the menu is built to avoid having to initialise the search service early.
-    Services.obs.addObserver(this, "before-build-contextmenu", false);
-  },
-
-  uninit: function ch_uninit() {
-    Services.obs.removeObserver(this, "before-build-contextmenu");
-  },
-
-  observe: function observe(aSubject, aTopic) {
-    if (aTopic == "before-build-contextmenu") {
-      this._setSearchMenuItem();
-    }
-  },
-
-  _setSearchMenuItem: function setSearchMenuItem() {
-    if (this._searchMenuItem) {
-      NativeWindow.contextmenus.remove(this._searchMenuItem);
-    }
-    this._searchMenuItem = NativeWindow.contextmenus.add(Strings.browser.formatStringFromName("contextmenu.search", [Services.search.defaultEngine.name], 1), ClipboardHelper.searchWithContext, ClipboardHelper.searchWith.bind(ClipboardHelper));
-  },
-
   get clipboardHelper() {
     delete this.clipboardHelper;
     return this.clipboardHelper = Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
@@ -6222,7 +6191,7 @@ var ClipboardHelper = {
   },
 
   copy: function(aElement, aX, aY) {
-    if (SelectionHandler.shouldShowContextMenu(aX, aY)) {
+    if (SelectionHandler.isSelectionActive()) {
       SelectionHandler.copySelection();
       return;
     }
@@ -6269,7 +6238,7 @@ var ClipboardHelper = {
     return {
       matches: function(aElement, aX, aY) {
         // Do not show "Copy All" for normal non-input text selection.
-        if (!isCopyAll && SelectionHandler.shouldShowContextMenu(aX, aY))
+        if (!isCopyAll && SelectionHandler.isSelectionActive())
           return true;
 
         if (NativeWindow.contextmenus.textContext.matches(aElement)) {
@@ -6302,7 +6271,7 @@ var ClipboardHelper = {
 
   selectAllContext: {
     matches: function selectAllContextMatches(aElement, aX, aY) {
-      if (SelectionHandler.shouldShowContextMenu(aX, aY))
+      if (SelectionHandler.isSelectionActive())
         return true;
 
       if (NativeWindow.contextmenus.textContext.matches(aElement))
@@ -6314,13 +6283,13 @@ var ClipboardHelper = {
 
   shareContext: {
     matches: function shareContextMatches(aElement, aX, aY) {
-      return SelectionHandler.shouldShowContextMenu(aX, aY);
+      return SelectionHandler.isSelectionActive();
     }
   },
 
   searchWithContext: {
     matches: function searchWithContextMatches(aElement, aX, aY) {
-      return SelectionHandler.shouldShowContextMenu(aX, aY);
+      return SelectionHandler.isSelectionActive();
     }
   },
 
@@ -6329,6 +6298,16 @@ var ClipboardHelper = {
       if (NativeWindow.contextmenus.textContext.matches(aElement)) {
         let flavors = ["text/unicode"];
         return ClipboardHelper.clipboard.hasDataMatchingFlavors(flavors, flavors.length, Ci.nsIClipboard.kGlobalClipboard);
+      }
+      return false;
+    }
+  },
+
+  cutContext: {
+    matches: function(aElement) {
+      let copyctx = ClipboardHelper.getCopyContext(false);
+      if (NativeWindow.contextmenus.textContext.matches(aElement)) {
+        return copyctx.matches(aElement);
       }
       return false;
     }
@@ -6638,13 +6617,21 @@ var SearchEngines = {
     Services.obs.addObserver(this, "SearchEngines:GetVisible", false);
     Services.obs.addObserver(this, "SearchEngines:SetDefault", false);
     Services.obs.addObserver(this, "SearchEngines:Remove", false);
-    let contextName = Strings.browser.GetStringFromName("contextmenu.addSearchEngine");
+
     let filter = {
       matches: function (aElement) {
         return (aElement.form && NativeWindow.contextmenus.textContext.matches(aElement));
       }
     };
-    this._contextMenuId = NativeWindow.contextmenus.add(contextName, filter, this.addEngine);
+    SelectionHandler.actions.SEARCH_ADD = {
+      id: "add_search_action",
+      label: Strings.browser.GetStringFromName("contextmenu.addSearchEngine"),
+      icon: "drawable://ic_url_bar_search",
+      selector: filter,
+      action: function(aElement) {
+        SearchEngines.addEngine(aElement);
+      }
+    }
   },
 
   uninit: function uninit() {
@@ -6799,6 +6786,20 @@ var SearchEngines = {
       onSuccess: function() {
         // Display a toast confirming addition of new search engine.
         NativeWindow.toast.show(Strings.browser.formatStringFromName("alertSearchEngineAddedToast", [engine.title], 1), "long");
+      },
+
+      onError: function(aCode) {
+        let errorMessage;
+        if (aCode == 2) {
+          // Engine is a duplicate.
+          errorMessage = "alertSearchEngineDuplicateToast";
+
+        } else {
+          // Unknown failure. Display general error message.
+          errorMessage = "alertSearchEngineErrorToast";
+        }
+
+        NativeWindow.toast.show(Strings.browser.formatStringFromName(errorMessage, [engine.title], 1), "long");
       }
     });
   },

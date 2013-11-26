@@ -196,6 +196,17 @@ pref("media.windows-media-foundation.play-stand-alone", true);
 #ifdef MOZ_DIRECTSHOW
 pref("media.directshow.enabled", true);
 #endif
+#ifdef MOZ_FMP4
+pref("media.fragmented-mp4.enabled", true);
+// Denotes that the fragmented MP4 parser can be created by <video> elements.
+// This is for testing, since the parser can't yet handle non-fragmented MP4,
+// so it will fail to play most MP4 files.
+pref("media.fragmented-mp4.exposed", false);
+// Specifies whether the fragmented MP4 parser uses a test decoder that
+// just outputs blank frames/audio instead of actually decoding. The blank
+// decoder works on all platforms.
+pref("media.fragmented-mp4.use-blank-decoder", false);
+#endif
 #ifdef MOZ_RAW
 pref("media.raw.enabled", true);
 #endif
@@ -219,14 +230,20 @@ pref("media.apple.mp3.enabled", true);
 #endif
 #ifdef MOZ_WEBRTC
 pref("media.navigator.enabled", true);
+pref("media.navigator.load_adapt", false);
 pref("media.navigator.video.default_width",640);
 pref("media.navigator.video.default_height",480);
 pref("media.navigator.video.default_fps",30);
 pref("media.navigator.video.default_minfps",10);
+#ifdef MOZ_WIDGET_GONK
+pref("media.peerconnection.enabled", false);
+pref("media.navigator.video.max_fs", 1200); // 640x480 == 1200mb
+pref("media.navigator.video.max_fr", 30);
+#else
+pref("media.peerconnection.enabled", true);
 pref("media.navigator.video.max_fs", 0); // unrestricted
 pref("media.navigator.video.max_fr", 0); // unrestricted
-pref("media.navigator.load_adapt", false);
-pref("media.peerconnection.enabled", true);
+#endif
 pref("media.navigator.permission.disabled", false);
 pref("media.peerconnection.default_iceservers", "[{\"url\": \"stun:stun.services.mozilla.com\"}]");
 pref("media.peerconnection.trickle_ice", true);
@@ -968,6 +985,14 @@ pref("network.protocol-handler.external.disk", false);
 pref("network.protocol-handler.external.disks", false);
 pref("network.protocol-handler.external.afp", false);
 pref("network.protocol-handler.external.moz-icon", false);
+
+// Don't allow  external protocol handlers for common typos
+pref("network.protocol-handler.external.ttp", false);  // http
+pref("network.protocol-handler.external.ttps", false); // https
+pref("network.protocol-handler.external.tps", false);  // https
+pref("network.protocol-handler.external.ps", false);   // https
+pref("network.protocol-handler.external.ile", false);  // file
+pref("network.protocol-handler.external.le", false);   // file
 
 // An exposed protocol handler is one that can be used in all contexts.  A
 // non-exposed protocol handler is one that can only be used internally by the
@@ -2013,6 +2038,15 @@ pref("hangmonitor.timeout", 0);
 pref("plugins.load_appdir_plugins", false);
 // If true, plugins will be click to play
 pref("plugins.click_to_play", false);
+
+// A comma-delimited list of plugin name prefixes matching plugins that will be
+// exposed when enumerating navigator.plugins[]. For example, prefix "Shockwave"
+// matches both Adobe Flash Player ("Shockwave Flash") and Adobe Shockwave
+// Player ("Shockwave for Director"). To hide all plugins from enumeration, use
+// the empty string "" to match no plugin names. To allow all plugins to be
+// enumerated, use the string "*" to match all plugin names.
+pref("plugins.enumerable_names", "Java,Nexus Personal,QuickTime,Shockwave");
+
 // The default value for nsIPluginTag.enabledState (STATE_ENABLED = 2)
 pref("plugin.default.state", 2);
 
@@ -2086,9 +2120,6 @@ pref("svg.marker-improvements.enabled", false);
 #else
 pref("svg.marker-improvements.enabled", true);
 #endif
-
-// Is support for the new SVG text implementation enabled?
-pref("svg.text.css-frames.enabled", true);
 
 pref("font.minimum-size.ar", 0);
 pref("font.minimum-size.x-armn", 0);
@@ -3402,8 +3433,8 @@ pref("font.alias-list", "sans,sans-serif,serif,monospace");
 // ar
 
 pref("font.name.serif.el", "Droid Serif");
-pref("font.name.sans-serif.el", "Fira Sans OT");
-pref("font.name.monospace.el", "Fira Mono OT");
+pref("font.name.sans-serif.el", "Roboto"); // To be updated once the Greek letters in Fira are revised
+pref("font.name.monospace.el", "Droid Sans Mono");
 
 pref("font.name.serif.he", "Charis SIL Compact");
 pref("font.name.sans-serif.he", "Fira Sans OT");
@@ -3976,6 +4007,8 @@ pref("ui.panel.default_level_parent", true);
 
 pref("mousewheel.system_scroll_override_on_root_content.enabled", false);
 
+pref("ui.key.menuAccessKeyFocuses", true);
+
 # XP_UNIX
 #endif
 #endif
@@ -4198,6 +4231,7 @@ pref("layers.acceleration.force-enabled", false);
 
 pref("layers.acceleration.draw-fps", false);
 
+pref("layers.dump", false);
 pref("layers.draw-borders", false);
 pref("layers.draw-tile-borders", false);
 pref("layers.draw-bigimage-borders", false);
@@ -4365,6 +4399,9 @@ pref("dom.mozPermissionSettings.enabled", false);
 #ifdef XP_WIN
 pref("dom.w3c_touch_events.enabled", 2);
 #endif
+
+// W3C draft pointer events
+pref("dom.w3c_pointer_events.enabled", false);
 
 // enable JS dump() function.
 pref("browser.dom.window.dump.enabled", false);

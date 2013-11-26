@@ -120,6 +120,7 @@ static PRLogModuleInfo *sFontInitLog = nullptr;
 static PRLogModuleInfo *sTextrunLog = nullptr;
 static PRLogModuleInfo *sTextrunuiLog = nullptr;
 static PRLogModuleInfo *sCmapDataLog = nullptr;
+static PRLogModuleInfo *sTextPerfLog = nullptr;
 #endif
 
 /* Class to listen for pref changes so that chrome code can dynamically
@@ -364,11 +365,12 @@ gfxPlatform::Init()
     gEverInitialized = true;
 
 #ifdef PR_LOGGING
-    sFontlistLog = PR_NewLogModule("fontlist");;
-    sFontInitLog = PR_NewLogModule("fontinit");;
-    sTextrunLog = PR_NewLogModule("textrun");;
-    sTextrunuiLog = PR_NewLogModule("textrunui");;
-    sCmapDataLog = PR_NewLogModule("cmapdata");;
+    sFontlistLog = PR_NewLogModule("fontlist");
+    sFontInitLog = PR_NewLogModule("fontinit");
+    sTextrunLog = PR_NewLogModule("textrun");
+    sTextrunuiLog = PR_NewLogModule("textrunui");
+    sCmapDataLog = PR_NewLogModule("cmapdata");
+    sTextPerfLog = PR_NewLogModule("textperf");
 #endif
 
     gGfxPlatformPrefsLock = new Mutex("gfxPlatform::gGfxPlatformPrefsLock");
@@ -1945,6 +1947,9 @@ gfxPlatform::GetLog(eGfxLog aWhichLog)
     case eGfxLog_cmapdata:
         return sCmapDataLog;
         break;
+    case eGfxLog_textperf:
+        return sTextPerfLog;
+        break;
     default:
         break;
     }
@@ -2030,6 +2035,7 @@ static bool sPrefLayersAccelerationForceEnabled = false;
 static bool sPrefLayersAccelerationDisabled = false;
 static bool sPrefLayersPreferOpenGL = false;
 static bool sPrefLayersPreferD3D9 = false;
+static bool sPrefLayersDump = false;
 static bool sLayersSupportsD3D9 = false;
 static int  sPrefLayoutFrameRate = -1;
 static bool sBufferRotationEnabled = false;
@@ -2050,6 +2056,7 @@ InitLayersAccelerationPrefs()
     sPrefLayersAccelerationDisabled = Preferences::GetBool("layers.acceleration.disabled", false);
     sPrefLayersPreferOpenGL = Preferences::GetBool("layers.prefer-opengl", false);
     sPrefLayersPreferD3D9 = Preferences::GetBool("layers.prefer-d3d9", false);
+    sPrefLayersDump = Preferences::GetBool("layers.dump", false);
     sPrefLayoutFrameRate = Preferences::GetInt("layout.frame_rate", -1);
     sBufferRotationEnabled = Preferences::GetBool("layers.bufferrotation.enabled", true);
     sComponentAlphaEnabled = Preferences::GetBool("layers.componentalpha.enabled", true);
@@ -2139,6 +2146,13 @@ gfxPlatform::GetPrefLayoutFrameRate()
 {
   InitLayersAccelerationPrefs();
   return sPrefLayoutFrameRate;
+}
+
+bool
+gfxPlatform::GetPrefLayersDump()
+{
+  InitLayersAccelerationPrefs();
+  return sPrefLayersDump;
 }
 
 bool

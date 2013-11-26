@@ -53,6 +53,23 @@ ContentHostBase::DestroyFrontHost()
 }
 
 void
+ContentHostBase::OnActorDestroy()
+{
+  if (mDeprecatedTextureHost) {
+    mDeprecatedTextureHost->OnActorDestroy();
+  }
+  if (mDeprecatedTextureHostOnWhite) {
+    mDeprecatedTextureHostOnWhite->OnActorDestroy();
+  }
+  if (mNewFrontHost) {
+    mNewFrontHost->OnActorDestroy();
+  }
+  if (mNewFrontHostOnWhite) {
+    mNewFrontHostOnWhite->OnActorDestroy();
+  }
+}
+
+void
 ContentHostBase::Composite(EffectChain& aEffectChain,
                            float aOpacity,
                            const gfx::Matrix4x4& aTransform,
@@ -74,6 +91,9 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
 
   RefPtr<TexturedEffect> effect =
     CreateTexturedEffect(mDeprecatedTextureHost, mDeprecatedTextureHostOnWhite, aFilter);
+  if (!effect) {
+    return;
+  }
 
   aEffectChain.mPrimaryEffect = effect;
 
@@ -240,20 +260,20 @@ ContentHostBase::Dump(FILE* aFile,
   if (!aFile) {
     aFile = stderr;
   }
-  fprintf(aFile, "<ul>");
+  fprintf_stderr(aFile, "<ul>");
   if (mDeprecatedTextureHost) {
-    fprintf(aFile, "%s", aPrefix);
-    fprintf(aFile, "<li> <a href=");
+    fprintf_stderr(aFile, "%s", aPrefix);
+    fprintf_stderr(aFile, "<li> <a href=");
     DumpDeprecatedTextureHost(aFile, mDeprecatedTextureHost);
-    fprintf(aFile, "> Front buffer </a></li> ");
+    fprintf_stderr(aFile, "> Front buffer </a></li> ");
   }
   if (mDeprecatedTextureHostOnWhite) {
-    fprintf(aFile, "%s", aPrefix);
-    fprintf(aFile, "<li> <a href=");
+    fprintf_stderr(aFile, "%s", aPrefix);
+    fprintf_stderr(aFile, "<li> <a href=");
     DumpDeprecatedTextureHost(aFile, mDeprecatedTextureHostOnWhite);
-    fprintf(aFile, "> Front buffer on white </a> </li> ");
+    fprintf_stderr(aFile, "> Front buffer on white </a> </li> ");
   }
-  fprintf(aFile, "</ul>");
+  fprintf_stderr(aFile, "</ul>");
 }
 
 #endif
@@ -409,19 +429,16 @@ ContentHostDoubleBuffered::DestroyTextures()
                "We won't be able to destroy our SurfaceDescriptor");
     mNewFrontHost = nullptr;
   }
-
   if (mNewFrontHostOnWhite) {
     MOZ_ASSERT(mNewFrontHostOnWhite->GetDeAllocator(),
                "We won't be able to destroy our SurfaceDescriptor");
     mNewFrontHostOnWhite = nullptr;
   }
-
   if (mBackHost) {
     MOZ_ASSERT(mBackHost->GetDeAllocator(),
                "We won't be able to destroy our SurfaceDescriptor");
     mBackHost = nullptr;
   }
-
   if (mBackHostOnWhite) {
     MOZ_ASSERT(mBackHostOnWhite->GetDeAllocator(),
                "We won't be able to destroy our SurfaceDescriptor");
@@ -429,6 +446,29 @@ ContentHostDoubleBuffered::DestroyTextures()
   }
 
   // don't touch mDeprecatedTextureHost, we might need it for compositing
+}
+
+void
+ContentHostDoubleBuffered::OnActorDestroy()
+{
+  if (mDeprecatedTextureHost) {
+    mDeprecatedTextureHost->OnActorDestroy();
+  }
+  if (mDeprecatedTextureHostOnWhite) {
+    mDeprecatedTextureHostOnWhite->OnActorDestroy();
+  }
+  if (mNewFrontHost) {
+    mNewFrontHost->OnActorDestroy();
+  }
+  if (mNewFrontHostOnWhite) {
+    mNewFrontHostOnWhite->OnActorDestroy();
+  }
+  if (mBackHost) {
+    mBackHost->OnActorDestroy();
+  }
+  if (mBackHostOnWhite) {
+    mBackHostOnWhite->OnActorDestroy();
+  }
 }
 
 void
@@ -716,7 +756,6 @@ ContentHostIncremental::TextureUpdateRequest::Execute(ContentHostIncremental* aH
   }
 }
 
-#ifdef MOZ_LAYERS_HAVE_LOG
 void
 ContentHostSingleBuffered::PrintInfo(nsACString& aTo, const char* aPrefix)
 {
@@ -763,7 +802,6 @@ ContentHostDoubleBuffered::PrintInfo(nsACString& aTo, const char* aPrefix)
     mBackHost->PrintInfo(aTo, prefix.get());
   }
 }
-#endif
 
 #ifdef MOZ_DUMP_PAINTING
 void
@@ -778,20 +816,20 @@ ContentHostDoubleBuffered::Dump(FILE* aFile,
   if (!aFile) {
     aFile = stderr;
   }
-  fprintf(aFile, "<ul>");
+  fprintf_stderr(aFile, "<ul>");
   if (mBackHost) {
-    fprintf(aFile, "%s", aPrefix);
-    fprintf(aFile, "<li> <a href=");
+    fprintf_stderr(aFile, "%s", aPrefix);
+    fprintf_stderr(aFile, "<li> <a href=");
     DumpDeprecatedTextureHost(aFile, mBackHost);
-    fprintf(aFile, " >Back buffer</a></li>");
+    fprintf_stderr(aFile, " >Back buffer</a></li>");
   }
   if (mBackHostOnWhite) {
-    fprintf(aFile, "%s", aPrefix);
-    fprintf(aFile, "<li> <a href=");
+    fprintf_stderr(aFile, "%s", aPrefix);
+    fprintf_stderr(aFile, "<li> <a href=");
     DumpDeprecatedTextureHost(aFile, mBackHostOnWhite);
-    fprintf(aFile, " >Back buffer on white</a> </li>");
+    fprintf_stderr(aFile, " >Back buffer on white</a> </li>");
   }
-  fprintf(aFile, "</ul>");
+  fprintf_stderr(aFile, "</ul>");
 }
 #endif
 

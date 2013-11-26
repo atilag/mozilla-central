@@ -142,7 +142,7 @@ public:
   HRESULT OnRightTapped(IGestureRecognizer* aSender,
                         IRightTappedEventArgs* aArgs);
 
-  void HandleSingleTap(const Point& aPoint);
+  void HandleTap(const Point& aPoint, unsigned int aTapCount);
   void HandleLongTap(const Point& aPoint);
 
 private:
@@ -169,7 +169,7 @@ private:
   bool HitTestChrome(const LayoutDeviceIntPoint& pt);
 
   // Event processing helpers.  See function definitions for more info.
-  void TransformRefPoint(const Point& aPosition,
+  bool TransformRefPoint(const Point& aPosition,
                          LayoutDeviceIntPoint& aRefPointOut);
   void TransformTouchEvent(WidgetTouchEvent* aEvent);
   void OnPointerNonTouch(IPointerPoint* aPoint);

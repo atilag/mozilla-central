@@ -84,7 +84,7 @@ RtspController::Play(void)
   }
 
   if (mState != CONNECTED) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_ERROR_NOT_CONNECTED;
   }
 
   mRtspSource->play();
@@ -101,7 +101,7 @@ RtspController::Pause(void)
   }
 
   if (mState != CONNECTED) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_ERROR_NOT_CONNECTED;
   }
 
   mRtspSource->pause();
@@ -118,7 +118,7 @@ RtspController::Resume(void)
   }
 
   if (mState != CONNECTED) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_ERROR_NOT_CONNECTED;
   }
 
   mRtspSource->play();
@@ -135,7 +135,7 @@ RtspController::Suspend(void)
   }
 
   if (mState != CONNECTED) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_ERROR_NOT_CONNECTED;
   }
 
   mRtspSource->pause();
@@ -152,7 +152,7 @@ RtspController::Seek(uint64_t seekTimeUs)
   }
 
   if (mState != CONNECTED) {
-    return NS_ERROR_UNEXPECTED;
+    return NS_ERROR_NOT_CONNECTED;
   }
 
   mRtspSource->seek(seekTimeUs);
@@ -302,7 +302,7 @@ class SendOnDisconnectedTask : public nsRunnable
 public:
   SendOnDisconnectedTask(nsIStreamingProtocolListener *listener,
                          uint8_t index,
-                         uint32_t reason)
+                         nsresult reason)
     : mListener(listener)
     , mIndex(index)
     , mReason(reason)
@@ -318,14 +318,14 @@ public:
 private:
   nsCOMPtr<nsIStreamingProtocolListener> mListener;
   uint8_t mIndex;
-  uint32_t mReason;
+  nsresult mReason;
 };
 
 NS_IMETHODIMP
 RtspController::OnDisconnected(uint8_t index,
-                               uint32_t reason)
+                               nsresult reason)
 {
-  LOG(("RtspController::OnDisconnected()"));
+  LOG(("RtspController::OnDisconnected() for track %d reason = 0x%x", index, reason));
   mState = DISCONNECTED;
   if (mListener) {
     nsRefPtr<SendOnDisconnectedTask> task =

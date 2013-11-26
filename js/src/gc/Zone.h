@@ -128,12 +128,12 @@ struct Zone : public JS::shadow::Zone,
 
     void setNeedsBarrier(bool needs, ShouldUpdateIon updateIon);
 
-    const bool *AddressOfNeedsBarrier() const {
+    const bool *addressOfNeedsBarrier() const {
         return &needsBarrier_;
     }
 
   public:
-    enum CompartmentGCState {
+    enum GCState {
         NoGC,
         Mark,
         MarkGray,
@@ -143,7 +143,7 @@ struct Zone : public JS::shadow::Zone,
 
   private:
     bool                         gcScheduled;
-    CompartmentGCState           gcState;
+    GCState                      gcState;
     bool                         gcPreserveCode;
 
   public:
@@ -166,7 +166,7 @@ struct Zone : public JS::shadow::Zone,
         return runtimeFromMainThread()->isHeapMajorCollecting() && gcState != NoGC;
     }
 
-    void setGCState(CompartmentGCState state) {
+    void setGCState(GCState state) {
         JS_ASSERT(runtimeFromMainThread()->isHeapBusy());
         JS_ASSERT_IF(state != NoGC, canCollect());
         gcState = state;
@@ -193,7 +193,7 @@ struct Zone : public JS::shadow::Zone,
         // Zones cannot be collected while in use by other threads.
         if (usedByExclusiveThread)
             return false;
-        JSRuntime *rt = runtimeFromMainThread();
+        JSRuntime *rt = runtimeFromAnyThread();
         if (rt->isAtomsZone(this) && rt->exclusiveThreadsPresent())
             return false;
         return true;
@@ -237,6 +237,12 @@ struct Zone : public JS::shadow::Zone,
 
     /* Whether this zone is being used by a thread with an ExclusiveContext. */
     bool usedByExclusiveThread;
+
+    /*
+     * Get a number that is incremented whenever this zone is collected, and
+     * possibly at other times too.
+     */
+    uint64_t gcNumber();
 
     /*
      * These flags help us to discover if a compartment that shouldn't be alive
